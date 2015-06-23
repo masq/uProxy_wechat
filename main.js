@@ -5,7 +5,7 @@ var http = require("http"),
 
 var part1 = "http://login.wechat.com/jslogin?appid=wx782c26e4c19acffb&redirect_uri=",
 	part2 = encodeURIComponent("http://web2.wechat.com/cgi-bin/mmwebwx-bin/webwxnewloginpage"),
-	part3 = "&fun=new&lang=en_US";
+	part3 = "&fun=new&lang=en_US&_=" + (new Date()).getTime();
 var get_me = part1 + part2 + part3;
 var uuid = "";
 var urlQR = "http://login.wechat.com/qrcode/";
@@ -24,6 +24,7 @@ http.get(get_me, function(res) {
 		console.log("[+] Got UUID:", uuid);
 		console.log("[*] Getting QR code...");
 		http.get(urlQR, function(resp) {
+			resp.setEncoding("binary");
 			resp.on("error", console.error);
 			resp.on("data", function(d){
 				imgQR += d;
@@ -31,21 +32,29 @@ http.get(get_me, function(res) {
 			resp.on("end", function() {
 				console.log("[+] Got QR");
 				qrpath += "/tmp/" + uuid;
-				fs.writeFile(qrpath, imgQR, function(e) {
+				fs.writeFile(qrpath, imgQR, "binary", function(e) {
 					if (e) console.error(e);
 					console.log("[*] QR written to", qrpath);
-					console.log("[*] QR can be viewed at http://localhost:8000");
+					fs.readFile(qrpath, function (air, theQR) {
+						if (air) throw air;
+						http.createServer(function serve(req, resp) {
+							resp.writeHead(200, { "content-type": "image/jpeg" });
+							console.log("[*] 200 GET");
+							resp.end(theQR);
+						}).listen(8000);
+						console.log("[*] QR can be viewed at http://localhost:8000");
+					});
 				});
 			});
 		});
 	});
 });
 
-var server = http.createServer(function serve(req, resp) {
-	resp.writeHead(200, { "content-type": "image/jpeg" });
-	console.log("[*] 200 GET");
-	fs.createReadStream(qrpath).pipe(resp);
-	resp.end();
-});
-server.listen(8000);
+
+
+
+
+
+
+
 
