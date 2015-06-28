@@ -26,6 +26,7 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 
 }, handleError).then(function(thing) {
 	console.log("[+] Got redirect:", thing);
+	console.log("[-] That's all for now, Folks. :/");
 	//TODO something with thing.url
 }, function(error) {
 	throw error
@@ -135,7 +136,6 @@ function checkForScan() {
 	console.log("[*] Checking for QR code scans...");
 	return promiseWhile(function() {
 		return new Promise(function (resolve, reject) {
-			var condition = ;
 			//test if url exists in the result, and the QR hasn't expired.
 			if ((result.code !== 400) && (typeof result.url === "undefined"))
 				resolve(result);
