@@ -64,21 +64,16 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 	//
 	// logs in the user and initializes some things.
 	return webwxinit(loginData).then(function() {  //TODO consider if want a return value?
-		log(1, "Notifying others of login");
-		return webwxStatusNotify(loginData)
-	}, handleError).then(function() {
+		log(2, "Notifying others of login");
+		webwxStatusNotify(loginData);
 		log(1, "Getting ContactList");
-		return webwxgetcontact(loginData).then(function() {
-			log(1, "Getting contacts' icons");
-			for (var i = 0; i < contacts.length; i++) {
-				webwxgeticon(contacts[i].HeadImgUrl, i, contacts.length);
-			}	
-			return new Promise(function (resolve, reject) {
-				resolve(loginData);
-			});
-		}, handleError);
+		return webwxgetcontact(loginData)  // returns loginData
 	}, handleError);
 }, handleError).then(function(loginData) {
+	log(1, "Getting contacts' icons");
+	for (var i = 0; i < contacts.length; i++) {
+		webwxgeticon(contacts[i].HeadImgUrl, i, contacts.length);
+	}	
 	// NOTE: synccheck domain is webpush2.wechat.com, everything else is web(1|2).wech...
 	//TODO synccheck loop.
 	log(0, "The end; now we need to synccheck loop");
@@ -86,9 +81,75 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 
 /*********************************** FUNCTIONS *********************************/
 
+function synccheck(loginData) {
+	return promiseWhile(function() {
+		return new Promise(function (resolve, reject) {
+			resolve(1 === 1);
+			// Always run this until logout is sent; TODO: decide if I need to handle that here
+		});	
+	}, function() {
+		return new Promise(function (resolve, reject) {
+			var syncParams = {
+				"r": +new Date(),
+				"skey": encodeURIComponent(loginData.skey),
+				"sid": loginData.wxsid,
+				"uin": loginData.wxuin,
+				"deviceid": getDeviceID(),
+				"synckey": encodeURIComponent(formSyncKeys()),
+				"lang": "en_US",
+				"pass_ticket": loginData.pass_ticket
+			};
+			var syncDom = "webpush2.wechat.com";
+			var the_synCzech_earl = makeURL(syncDom, WEBPATH + "synccheck", syncParams, 1);
+			https.get(the_synCzech_earl, function(response) {
+				var result = "";
+				response.on("error", handleError);
+				response.on("data", function(chunk) {
+					result += chunk;
+				});
+				response.on("end", function() {
+					var jason = JSON.parse(result.split("=")[1]);
+					log(4, jason);
+					if (jason.retcode !== "0") {
+						log(-1, jason.retcode);
+					}
+					var type = parseInt(jason.selector);
+					if (type === 0) {  // when selector is zero, just loop again.
+						resolve();
+					} else {
+						//TODO, do stuff based on selector
+						if (type === 7) {
+							//webwxsync(); // TODO
+						} else if (type === 2) {
+							//webwxstatreport //TODO: decide if I should actually include this.
+						}
+					}
+				});
+			}).on("error", handleError);
+		});
+	});
+}
+
+// takes url with to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query 
+// parameters of sid, skey, lang, and pass_ticket.
+// is POST request, with BaseRequest, and a syncKey object.
+//		syncKey has a count field which is the amount of keys, and then the list
+//		of keys, each an object as Key: N, and Value.
+// responds with JSON, most notably the syncKeys.
+function webwxsync(url) {
+	//TODO
+}
+
+// Sends a message
+function webwxsendmsg(url, msg) {
+
+}
+
+// Gets the icon/photo for a contact, given the friends iconURLPath.
+// also accepts a current and total number of contact icons to get.
 function webwxgeticon(iconURLPath, current, total) {
 	var the_earl_of_iconia = makeURL(WEBDOM, iconURLPath, "", 1);
-	http.get(the_earl_of_iconia, function(response) {
+	https.get(the_earl_of_iconia, function(response) {
 		response.setEncoding("binary");
 		var result = "";
 		response.on("error", handleError);
@@ -97,17 +158,23 @@ function webwxgeticon(iconURLPath, current, total) {
 		});
 		response.on("end", function() {
 			var begin = iconURLPath.indexOf("username=") + "username=".length;
-			var end = iconURLPath("&skey=");
+			var end = iconURLPath.indexOf("&skey=");
 			var iconPath = iconURLPath.substring(begin, end);
 			fs.writeFile("/tmp/" + iconPath, result, "binary", function (e) {
 				if (e) handleError;
-				else log(0, "Icon " + current + " of " + total + " successfully written");
+				else {
+					if (typeof current !== "undefined" && typeof total !== "undefined") {
+						log(0, "Icon " + current + " of " + total + " successfully written");
+					} else {
+						log(0, "Icon successfully written");
+					}
+				}
 			});
 		});
-	});
+	}).on("error", handleError);
 }
 
-//FIXME FIXME FIXME FIXME FIXME 
+// Gets contact list.
 function webwxgetcontact(loginData) {
 	return new Promise(function (resolve, reject) {
 		var clParams = {
@@ -116,44 +183,25 @@ function webwxgetcontact(loginData) {
 			"r": +new Date(),
 			"skey": loginData.skey
 		};
-		//var the_earl_of_contax = makeURL(WEBDOM, WEBPATH + "webwxgetcontact", clParams, 1);
-		//log(2, JSON.stringify(the_earl_of_contax));  // Verbose
-		var path = WEBPATH + "webwxgetcontact?lang=en_US&pass_ticket=" + loginData.pass_ticket;
-		path += "&r=" + +new Date() + "&skey=" + loginData.skey;
-		log(2, path);
-		var options = {
-			"hostname": WEBDOM,
-			"port": 443,  //443 for https, 80 for http
-			"path": path,
-			"method": "GET",
-			"headers": {
-				"Connection": "keep-alive",
-				"Cookie": cookies,
-				"Accept": "application/json",
-				"Accept-Encoding": "gzip,deflate,sdch",
-				"Accept-Language": "en-US,en;q=0.8",
-				"User-Agent": USERAGENT
-			}
-		};
-		var request = http.request(options, function(response) {
+		var the_earl_of_contax = makeURL(WEBDOM, WEBPATH + "webwxgetcontact", clParams, 1);
+		//log(4, JSON.stringify(the_earl_of_contax));  // Verbose
+		https.get(the_earl_of_contax, function(response) {
 			var result = "";
-			log(2, response);
 			response.on("error", handleError);
 			response.on("data", function(chunk) {
 				result += chunk;
 			});
 			response.on("end", function() {
-				log(2, result);
 				var jason = JSON.parse(result);
-				log(2, "Contacts received: " + JSON.stringify(jason));  // Verbose
+				//log(4, "Contacts received: " + JSON.stringify(jason));  // Verbose
 				if (jason.BaseResponse.ErrMsg) {
 					log(-1, jason.BaseResponse.ErrMsg);
 				}
 				contacts = jason.MemberList;
-				resolve();
+				log(0, "Got ContactList");
+				resolve(loginData);
 			});
 		}).on("error", handleError);
-		request.end();
 	});
 }
 
@@ -188,7 +236,6 @@ function webwxStatusNotify(loginData, stat) {
 				"Connection": "keep-alive",
 				"Cookie": cookies,
 				"User-Agent": USERAGENT
-				//TODO: consider spoofing user agent?
 			}
 		};
 		var request = https.request(options, function(response) {
@@ -206,28 +253,10 @@ function webwxStatusNotify(loginData, stat) {
 				log(0, "Other devices notified of login");
 				resolve();
 			});
-		});
-		request.on("error", handleError);
-		request.write(postData);
-		request.end();
+		}).on("error", handleError);
+		request.end(postData);
 	});
 }
-
-// takes url with to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query 
-// parameters of sid, skey, lang, and pass_ticket.
-// is POST request, with BaseRequest, and a syncKey object.
-//		syncKey has a count field which is the amount of keys, and then the list
-//		of keys, each an object as Key: N, and Value.
-// responds with JSON, most notably the syncKeys.
-function webwxsync(url) {
-	//TODO
-}
-
-// Sends a message
-function webwxsendmsg(url, msg) {
-
-}
-
 // Gets session data from the passed URL.
 //
 // returns a promise, resolved with an object containing skey, sid, uin, pass_ticket.
@@ -239,7 +268,7 @@ function webwxnewloginpage(url) {
 			var setCookies = response.headers["set-cookie"];
 			for (var i = 0; i < setCookies.length; i++) {
 				var cookie = setCookies[i].split("; ")[0] + "; ";
-				//log(1, "Got cookie: " + cookie); // Verbose
+				//log(4, "Got cookie: " + cookie); // Verbose
 				cookies += cookie;
 			}
 			cookies = cookies.slice(0, -2);  //removes trailing "; "
@@ -261,13 +290,13 @@ function webwxnewloginpage(url) {
 					var end   = xml.indexOf(closeTag);
 					var value = xml.substring(begin, end);
 					result[key] = value; 
-					log(2, "Got xml data: " + key + " = " + value);  // Verbose
+					log(4, "Got xml data: " + key + " = " + value);  // Verbose
 				}
-				log(2, "Cookies: " + cookies);  // Verbose
+				log(4, "Cookies: " + cookies);  // Verbose
 				log(0, "Got login data");
 				resolve(result);
 			});
-		});
+		}).on("error", handleError);
 	});
 }
 
@@ -327,10 +356,8 @@ function webwxinit(loginData) {
 				log(0, "\"" + thisUser.NickName + "\" is now logged in");
 				resolve();
 			});
-		});
-		request.on("error", handleError);
-		request.write(postData);
-		request.end();
+		}).on("error", handleError);
+		request.end(postData);
 	});
 }
 
@@ -350,7 +377,7 @@ function getUUID(url) {
 				log(0, "Got UUID " + result);
 				resolve(result);
 			});
-		});
+		}).on("error", handleError);
 	});
 }
 
@@ -369,7 +396,7 @@ function getQR(url) {
 				log(0, "Got QR code");
 				resolve(imgQR);
 			});
-		});
+		}).on("error", handleError);
 	});
 }
 
@@ -470,9 +497,16 @@ function checkForScan() {
 					log(sign, respCode + (!meaning ? "Abnormal code" : meaning)); 
 					resolve(result);
 				});
-			});
+			}).on("error", handleError);
 		});
-	})
+	}, function(onRejectparam) {  // this will be our result object here
+		return new Promise(function (resolve, reject) {
+			// When we reject the condition, we got the redirect url.
+			if (onRejectparam.code === 200) {
+				resolve(onRejectparam); // resolve with object containing url.
+			} else handleError(onRejectparam);
+		});
+	});
 }
 
 
@@ -523,12 +557,14 @@ function log(sign, message, output) {
 		result = chalk.green("[+] " + message + "!");
 	} else if (sign > 0) {
 		var temp = "[*] " + message + "...";
-		if (sign % 3 === 1) {  // 1
+		if (sign % 4 === 1) {  // 1
 			result = chalk.cyan(temp);
-		} else if (sign % 3 === 2) {  // 2
+		} else if (sign % 4 === 2) {  // 2
 			result = chalk.yellow(temp);
-		} else {  // 3
+		} else if (sign % 4 === 3) {  // 3
 			result = chalk.magenta(temp);
+		} else {  // 4
+			result = temp;  // just plain white text... use for Verbose
 		}
 	} else {
 		result = chalk.red("[-] " + message + ".");
@@ -538,20 +574,25 @@ function log(sign, message, output) {
 
 // Helper method... provide a condition function and a main function. This will
 // perform like a while loop that returns a promise when the condition fails.
-function promiseWhile(condition, body) {
+function promiseWhile(condition, body, onReject) {
     return new Promise(function (resolve,reject) {
 		function loop() {
 			condition().then(function (result) {
 				// When it completes, loop again. Reject on failure... 
 				body().then(loop, reject);
 			}, function (result) {
-				// When we reject the condition, we got the redirect url.
-				if (result.code === 200) {
-					resolve(result); // resolve with object containing url.
-				} else handleError(result);
+				resolve(onReject(result));
 			});
 		}
 		loop();
 	});
 }
 
+function formSyncKeys() {
+	var result = "";
+	var list = syncKeys.List;
+	for (var i = 0; i < list.length; i++) {
+		result += list[i].Key + "_" + list[i].Value + "|";
+	}
+	return result.slice(0, -1);
+}
