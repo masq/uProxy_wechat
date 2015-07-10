@@ -10,7 +10,7 @@
 
 /********** Requires **********/
 "use strict";
-var http = require("http"); 
+var serve = require("http"); 
 var https = require("https");
 var	url  = require("url");
 var	fs   = require("fs");
@@ -22,12 +22,13 @@ var WEBDOM  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
 var WEBPATH = "/cgi-bin/mmwebwx-bin/"; 
 var USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
 
-var uuid = "";
-var cookies = "";
+var uuid = "";  // UUID associated with QR code  // TODO: consider making this nonglobal
+var cookies = [];  // cookies to be sent in requests.
 var syncKeys;  // Object with List of key/value objects, and Count=List.Length
 var contacts;  // List of user objects.
 var thisUser;  // User object.
 var chatSet;   // comma delimited string of UserName fields of user objects.
+var messages = [];  // List of message objects.
 
 /****************************** MAIN EXECUTION THREAD **************************/
 var uuidURLParameters = {
@@ -63,7 +64,7 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 	//"pass_ticket": ""
 	//
 	// logs in the user and initializes some things.
-	return webwxinit(loginData).then(function() {  //TODO consider if want a return value?
+	return webwxinit(loginData).then(function() {  
 		log(2, "Notifying others of login");
 		webwxStatusNotify(loginData);
 		log(1, "Getting ContactList");
@@ -75,74 +76,370 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 		webwxgeticon(contacts[i].HeadImgUrl, i, contacts.length);
 	}	
 	// NOTE: synccheck domain is webpush2.wechat.com, everything else is web(1|2).wech...
-	//TODO synccheck loop.
-	log(0, "The end; now we need to synccheck loop");
+	// TODO: make an input loop for sending messages or logging out.
+	userInterface(loginData);
+	log(2, "Looping to check for updates");
+	return synccheck(loginData);
+}, handleError).then(function (something) {
+	log(-1, "No longer syncchecking", something);
 }, handleError);
 
 /*********************************** FUNCTIONS *********************************/
 
+// Just a loop waiting for the signals to read something, write something, or log out.
+function userInterface(loginData) {
+	log(3, "Welcome to WeChat: CLI edition! Now listening to user input");
+	process.stdin.resume();
+	process.stdin.setEncoding("utf8");
+	var action;
+	var wStep;
+	var rStep;
+	var message;
+	toOuterLoop();
+
+	process.stdin.on("data", function(input) {
+		input = input.trim();
+		if (action === 0) {
+			if (input === "q") {
+				process.stdin.pause();
+				log(3, "No longer listening to user input");
+				webwxlogout(loginData);
+				log(1, "Logging out");
+				return;
+			} else if (input === "w") {
+				action = 1;
+			} else if (input === "r") {
+				action = 2;
+			}
+		} 
+		if (action === 1) {
+			craftMessage(input).then(function(message) {
+				webwxsendmsg(loginData, message);
+				toOuterLoop();
+			}, toOuterLoop);
+		} 
+		if (action === 2) {
+			readMessage(); //TODO
+			toOuterLoop();
+		}
+	});
+	
+	// Takes the user to the "outer loop" and resets the environment.
+	function toOuterLoop() {
+		action = 0;
+		wStep  = 0;
+		rStep  = 0;
+		message = {
+			"recipient": "",
+			"content": "",
+			"id": 0
+		};
+		log(3, "Type 'r' to Read a message, 'w' to Write one, and 'q' to Quit/logout");
+	}
+
+	// Creates a message to be sent.
+	function craftMessage(input) {
+		return new Promise(function (resolve, reject) {
+			input = input.trim();
+			if (input !== "-1") {
+				if (wStep === 0) {
+					log(3, "To cancel sending a message, type '-1' at any time");
+					log(3, "");
+					listUsers("Send message to whom? (choose the number)");
+					wStep++;
+				} else if (wStep === 1) {
+					var number = parseInt(input);
+					if (number && number > 0) {
+						message.recipient = contacts[number - 1].UserName;
+						log(3, "What did you want to say to them?");
+						wStep++;
+					} else {
+						listUsers("Send message to whom? (choose the number)");
+					}
+				} else if (wStep === 2) {
+					message.content = input;
+					log(0, "Message crafted");
+					message.id = +new Date() + Math.random().toFixed(3).replace(".", "");
+					log(4, "Message: " + JSON.stringify(message));  // Verbose
+					resolve(message);
+					wStep = 0;
+				}
+			} else reject();
+		});
+	}
+
+	// prompts user with the given question, and lists their contacts.
+	function listUsers(question) {
+		log(3, question);
+		for (var i = 0; i < contacts.length; i++) {
+			log(3, "Contact " + (i + 1) + ": " + contacts[i].NickName);
+		}
+	}
+
+	// Prints out a list of messages to read, and prompts the user to read one or not
+	function readMessage() {
+		log(-1, "TODO");
+	}
+}
+
+// Checks to see if there is new data relevant to the current user
 function synccheck(loginData) {
+	var retcode = 0;
 	return promiseWhile(function() {
 		return new Promise(function (resolve, reject) {
-			resolve(1 === 1);
-			// Always run this until logout is sent; TODO: decide if I need to handle that here
+			if (retcode === 0) resolve(retcode);
+			else reject(retcode);
 		});	
 	}, function() {
 		return new Promise(function (resolve, reject) {
-			var syncParams = {
+			var syncParams = {  // #encodeeverythingthatwalks
 				"r": +new Date(),
 				"skey": encodeURIComponent(loginData.skey),
-				"sid": loginData.wxsid,
-				"uin": loginData.wxuin,
+				"sid": encodeURIComponent(loginData.wxsid),
+				"uin": encodeURIComponent(loginData.wxuin),
 				"deviceid": getDeviceID(),
 				"synckey": encodeURIComponent(formSyncKeys()),
 				"lang": "en_US",
-				"pass_ticket": loginData.pass_ticket
+				"pass_ticket": encodeURIComponent(loginData.pass_ticket)
 			};
 			var syncDom = "webpush2.wechat.com";
 			var the_synCzech_earl = makeURL(syncDom, WEBPATH + "synccheck", syncParams, 1);
 			https.get(the_synCzech_earl, function(response) {
 				var result = "";
+				if (response.headers["set-cookie"]) {
+					updateCookies(response.headers["set-cookie"]);
+				}
 				response.on("error", handleError);
 				response.on("data", function(chunk) {
 					result += chunk;
 				});
 				response.on("end", function() {
-					var jason = JSON.parse(result.split("=")[1]);
-					log(4, jason);
-					if (jason.retcode !== "0") {
-						log(-1, jason.retcode);
-					}
-					var type = parseInt(jason.selector);
+					//log(4, "Synccheck response: " + result);  // Verbose
+					var fields = result.split("=")[1].trim().slice(1, -1).split(",");
+					retcode  = parseInt(fields[0].split(":")[1].slice(1,-1));
+					var type = parseInt(fields[1].split(":")[1].slice(1,-1));
+					//log(2, "SyncCheck: { Retcode: " + retcode + ", Selector: " + type + " }");  // Verbose
+					if (retcode !== 0) log(-1, "Synccheck error code: " + retcode);
 					if (type === 0) {  // when selector is zero, just loop again.
+						log(-1, "Syncchecked with type " + type + ". No new info..");
 						resolve();
 					} else {
-						//TODO, do stuff based on selector
-						if (type === 7) {
-							//webwxsync(); // TODO
-						} else if (type === 2) {
-							//webwxstatreport //TODO: decide if I should actually include this.
-						}
+						// sendmessage just happens, 
+						// webwxsync gets data based on Selector passed by synccheck.
+						// possibly need to call StatusNotify on certain Selectors
+						// to recieve messages... TBD
+						// type 1 is profile sync.
+						// type 2 is sync. FIXME  // typically associated with sendmessage
+						// think type 2 is new synckey
+						// type 4 is ModContact sync.  // typically associated with sendmessage
+						// type 7 is AddMsg sync.
+						//	MMWEBWX_OK = 0 ,
+						//	MMWEBWX_ERR_SYS = -1 ,
+						//	MMWEBWX_ERR_LOGIC = -2 ,
+						//	MMWEBWX_ERR_SESSION_NOEXIST = 1100,
+						//	MMWEBWX_ERR_SESSION_INVALID = 1101,
+						//	MMWEBWX_ERR_PARSER_REQUEST = 1200,
+						//	MMWEBWX_ERR_FREQ = 1205 // 频率拦截
+						
+						resolve(webwxsync(loginData, type));
 					}
 				});
 			}).on("error", handleError);
 		});
+	}, function() {  // also is getting passed the retcode in case of code revision, ignored here.
+		if (retcode === 1100) {
+			log(-1, "Attempted to synccheck a nonexistant session");
+		} else {
+			if (retcode === 1101) {
+				log(-1, "Attempted to synccheck an invalid session");
+			} else if (retcode === 1200) {
+				log(-1, "Webservice couldn't understand your request.");
+			} 
+			handleError(retcode);
+		}
 	});
 }
 
-// takes url with to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query 
-// parameters of sid, skey, lang, and pass_ticket.
-// is POST request, with BaseRequest, and a syncKey object.
+// takes type selector to select a corresponding type of data from the response to
+// possibly store.
+// is POST request to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query 
+// parameters of sid, skey, lang, and pass_ticket, and postData of BaseRequest, syncKey
+// object, and the bitflip of the currrent time.
 //		syncKey has a count field which is the amount of keys, and then the list
 //		of keys, each an object as Key: N, and Value.
 // responds with JSON, most notably the syncKeys.
-function webwxsync(url) {
-	//TODO
+function webwxsync(loginData, type) {
+	return new Promise(function (resolve, reject) {
+		var postData = JSON.stringify({
+			"BaseRequest": {
+				"Uin": loginData.wxuin,
+				"Sid": loginData.wxsid,
+				"Skey": loginData.skey,
+				"DeviceID": getDeviceID()
+			},
+			"SyncKey": syncKeys,
+			"rr": ~new Date()
+		});
+		var params = {
+			"sid": loginData.wxsid,
+			"skey": loginData.skey,
+			"lang": "en_US",
+			"pass_ticket": loginData.pass_ticket
+		};
+		var url = makeURL(WEBDOM, WEBPATH + "webwxsync", params, 1, postData.length);
+		//log(2, "posting: " + postData);  // Verbose
+		//log(2, "requesting: " + JSON.stringify(url));  // Verbose
+		var request = https.request(url, function(response) {
+			var result = "";
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
+			}
+			response.on("error", handleError);
+			response.on("data", function(chunk) {
+				result += chunk;
+			});
+			response.on("end", function() {
+				var jason = JSON.parse(result);
+				//log(1, "webwxsync response: " + JSON.stringify(jason));  // Verbose
+				if (jason.BaseResponse.ErrMsg) {  // TODO: maybe check retcode instead.
+					log(-1, jason.BaseResponse.ErrMsg);
+				}
+				// TODO: check type here and get relevant data.
+				// BaseResponse
+				// AddMsgCount: n => AddMsgList
+				// ModContactCount: n => ModContactList
+				// DelContactCount: n => DelContactList
+				// ModChatRoomMemberCount: n => ModChatRoomMemberList
+				// Profile [obj]
+				// ContinueFlag: n
+				// SyncKey
+				// Skey
+				if (jason.AddMsgCount !== 0) {
+					for (var i = 0; i < jason.AddMsgList.length; i++) {
+						messages.push(jason.AddMsgList[i]);
+					}
+				}
+				if (jason.SyncKey.Count !== syncKeys.Count) {
+					syncKeys = jason.SyncKey;
+				}
+				//log(0, "Synced with type " + type);  // Verbose
+				resolve();
+			});
+		}).on("error", handleError);
+		request.end(postData);
+	});
 }
 
 // Sends a message
-function webwxsendmsg(url, msg) {
+function webwxsendmsg(loginData, msg) {
+	var params = {
+		"lang": "en_US",
+		"pass_ticket": loginData.pass_ticket
+	};
+	var postData = JSON.stringify({
+		"BaseRequest": {
+			"Uin": loginData.wxuin,
+			"Sid": loginData.wxsid,
+			"Skey": loginData.skey,
+			"DeviceID": getDeviceID()
+		},
+		"Msg": {
+			"Type": 1,  // TODO: need more type support...
+			"Content": msg.content,
+			"FromUserName": thisUser.UserName,
+			"ToUserName": msg.recipient,
+			"LocalID": msg.id,
+			"ClientMsgId": msg.id
+		}
+	});
+	var url = makeURL(WEBDOM, WEBPATH + "webwxsendmsg", params, 1, postData.length);
+	var request = https.request(url, function(response) {
+		var result = "";
+		if (response.headers["set-cookie"]) {
+			updateCookies(response.headers["set-cookie"]);
+		}
+		response.on("error", handleError);
+		response.on("data", function(chunk) {
+			result += chunk;
+		});
+		response.on("end", function() {
+			var jason = JSON.parse(result);
+			//log(4, "sendmessage response: " + result);  // Verbose
+			log(0, "Message sent");
+			if (jason.BaseResponse.Ret !== 0) {
+				log(-1, "sendmessage error: " + jason.BaseResponse.Ret);
+			}
+			//TODO: want jason.MsgID (the messages' ID within their database)
+			//or to keep msg.id?
+		});
+	}).on("error", handleError);
+	request.end(postData);
+}
 
+// Called when receiving a message. Also once at login.
+function webwxStatusNotify(loginData, stat) {
+	// StatusNotify is a post request.
+	return new Promise(function (resolve, reject) {
+		var params = {
+			"lang": "en_US"
+		};
+		var postData = JSON.stringify({
+			"BaseRequest": {
+				"Uin": loginData.wxuin,
+				"Sid": loginData.wxsid,
+				"Skey": loginData.skey,
+				"DeviceID": getDeviceID()
+			},
+			// FIXME: take into account stat here, this is just init stuff right now
+			"Code": 3,
+			"FromUserName": thisUser.UserName,
+			"ToUserName": thisUser.UserName,
+			"ClientMsgId": +new Date()
+		});
+		var url = makeURL(WEBDOM, WEBPATH + "webwxstatusnotify", params, 1, postData.length);
+		var request = https.request(url, function(response) {
+			var data = "";
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
+			}
+			response.on("error", handleError);
+			response.on("data", function(chunk) {
+				data += chunk;
+			});
+			response.on("end", function() {
+				var jason = JSON.parse(data);
+				//log(2, JSON.stringify(jason));  // verbose
+				if (jason.BaseResponse.ErrMsg) {
+					log(-1, jason.BaseResponse.ErrMsg);
+				}
+				log(0, "Other devices notified of login");
+				resolve();
+			});
+		}).on("error", handleError);
+		request.end(postData);
+	});
+}
+
+function webwxlogout(loginData) {
+	var params = {
+		"redirect": 0,  // They normally do 1 here, but I don't think I want redirect.
+		"type": 0,
+		"skey": loginData.skey
+	};
+	var postData = "sid=" + loginData.wxsid + "&uin=" + loginData.wxuin;
+	var url = makeURL(WEBDOM, WEBPATH + "webwxlogout", params, 1, postData.length);
+	var request = https.request(url, function(response) {
+		var result = "";
+		response.on("error", handleError);
+		response.on("data", function(chunk) {
+			result += chunk;
+		});
+		response.on("end", function() {
+			log(4, "logout result: " + result);  // Verbose
+			log(0, "Logged out");
+		});
+	}).on("error", handleError);
+	request.end(postData);
 }
 
 // Gets the icon/photo for a contact, given the friends iconURLPath.
@@ -150,6 +447,9 @@ function webwxsendmsg(url, msg) {
 function webwxgeticon(iconURLPath, current, total) {
 	var the_earl_of_iconia = makeURL(WEBDOM, iconURLPath, "", 1);
 	https.get(the_earl_of_iconia, function(response) {
+		if (response.headers["set-cookie"]) {
+			updateCookies(response.headers["set-cookie"]);
+		}
 		response.setEncoding("binary");
 		var result = "";
 		response.on("error", handleError);
@@ -160,11 +460,11 @@ function webwxgeticon(iconURLPath, current, total) {
 			var begin = iconURLPath.indexOf("username=") + "username=".length;
 			var end = iconURLPath.indexOf("&skey=");
 			var iconPath = iconURLPath.substring(begin, end);
-			fs.writeFile("/tmp/" + iconPath, result, "binary", function (e) {
+			fs.writeFile("/tmp/wxicon_" + iconPath, result, "binary", function (e) {
 				if (e) handleError;
 				else {
 					if (typeof current !== "undefined" && typeof total !== "undefined") {
-						log(0, "Icon " + current + " of " + total + " successfully written");
+						log(0, "Icon " + (current + 1) + " of " + total + " successfully written");
 					} else {
 						log(0, "Icon successfully written");
 					}
@@ -187,6 +487,9 @@ function webwxgetcontact(loginData) {
 		//log(4, JSON.stringify(the_earl_of_contax));  // Verbose
 		https.get(the_earl_of_contax, function(response) {
 			var result = "";
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
+			}
 			response.on("error", handleError);
 			response.on("data", function(chunk) {
 				result += chunk;
@@ -205,58 +508,11 @@ function webwxgetcontact(loginData) {
 	});
 }
 
-// Called when receiving a message. Also once at login.
-function webwxStatusNotify(loginData, stat) {
-	// StatusNotify is a post request.
-	return new Promise(function (resolve, reject) {
-		var initParams = {
-			"lang": "en_US"
-		};
-		var postData = JSON.stringify({
-			"BaseRequest": {
-				"Uin": loginData.wxuin,
-				"Sid": loginData.wxsid,
-				"Skey": loginData.skey,
-				"DeviceID": getDeviceID()
-			},
-			// FIXME: take into account stat here, this is just init stuff right now
-			"Code": 3,
-			"FromUserName": thisUser.UserName,
-			"ToUserName": thisUser.UserName,
-			"ClientMsgId": +new Date()
-		});
-		var options = {
-			"hostname": WEBDOM,
-			"port": 443,  //443 for https, 80 for http
-			"path": WEBPATH + "webwxstatusnotify?lang=en_US",
-			"method": "POST",
-			"headers": {
-				"Content-Type": "application/json;charset=UTF-8",
-				"Content-Length": postData.length,
-				"Connection": "keep-alive",
-				"Cookie": cookies,
-				"User-Agent": USERAGENT
-			}
-		};
-		var request = https.request(options, function(response) {
-			var data = "";
-			response.on("error", handleError);
-			response.on("data", function(chunk) {
-				data += chunk;
-			});
-			response.on("end", function() {
-				var jason = JSON.parse(data);
-				//log(2, JSON.stringify(jason));  // verbose
-				if (jason.BaseResponse.ErrMsg) {
-					log(-1, jason.BaseResponse.ErrMsg);
-				}
-				log(0, "Other devices notified of login");
-				resolve();
-			});
-		}).on("error", handleError);
-		request.end(postData);
-	});
-}
+//TODO: umm... I really don't think we need/want to do this..
+//function webwxstatreport() {
+//
+//}
+
 // Gets session data from the passed URL.
 //
 // returns a promise, resolved with an object containing skey, sid, uin, pass_ticket.
@@ -265,13 +521,9 @@ function webwxnewloginpage(url) {
 	return new Promise(function (resolve, reject) {
 		https.get(url, function(response) {
 			var xml = "";
-			var setCookies = response.headers["set-cookie"];
-			for (var i = 0; i < setCookies.length; i++) {
-				var cookie = setCookies[i].split("; ")[0] + "; ";
-				//log(4, "Got cookie: " + cookie); // Verbose
-				cookies += cookie;
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
 			}
-			cookies = cookies.slice(0, -2);  //removes trailing "; "
 			response.on("error", handleError);
 			response.on("data", function(chunk) {
 				xml += chunk;
@@ -282,7 +534,7 @@ function webwxnewloginpage(url) {
 					"wxsid": "",
 					"wxuin": "",
 					"pass_ticket": ""
-				}
+				};
 				for (var key in result) {
 					var openTag  = "<" + key + ">";
 					var closeTag = "</" + key + ">";
@@ -292,7 +544,7 @@ function webwxnewloginpage(url) {
 					result[key] = value; 
 					log(4, "Got xml data: " + key + " = " + value);  // Verbose
 				}
-				log(4, "Cookies: " + cookies);  // Verbose
+				log(4, "Cookies: " + formCookies());  // Verbose
 				log(0, "Got login data");
 				resolve(result);
 			});
@@ -306,13 +558,11 @@ function webwxnewloginpage(url) {
 function webwxinit(loginData) {
 	// init is a post request.
 	return new Promise(function (resolve, reject) {
-		var initParams = {
+		var params = {
 			"r": ~new Date(),
 			"lang": "en_US",
 			"pass_ticket": loginData.pass_ticket
 		};
-		var path = WEBPATH + "webwxinit?r=" + ~new Date() + "&lang=en_US";
-		path += "&pass_ticket=" + loginData.pass_ticket;
 		var postData = JSON.stringify({
 			"BaseRequest": {
 				"Uin": loginData.wxuin,
@@ -321,22 +571,12 @@ function webwxinit(loginData) {
 				"DeviceID": getDeviceID()
 			}
 		});
-		var options = {
-			"hostname": WEBDOM,
-			"port": 443,  //443 for https, 80 for http
-			"path": path,
-			"method": "POST",
-			"headers": {
-				"Content-Type": "application/json;charset=UTF-8",
-				"Content-Length": postData.length,
-				"Connection": "keep-alive",
-				"User-Agent": USERAGENT,
-				"Cookie": cookies
-				//TODO: consider spoofing user agent?
-			}
-		};
-		var request = https.request(options, function(response) {
+		var url = makeURL(WEBDOM, WEBPATH + "webwxinit", params, 1, postData.length);
+		var request = https.request(url, function(response) {
 			var data = "";
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
+			}
 			response.on("error", handleError);
 			response.on("data", function(chunk) {
 				data += chunk;
@@ -360,7 +600,6 @@ function webwxinit(loginData) {
 		request.end(postData);
 	});
 }
-
 
 // Gets the uuid for the session.
 function getUUID(url) {
@@ -404,7 +643,7 @@ function getQR(url) {
 // and then creates a server displaying it.
 function serveQR(from_QR_url) {
 	getQR(from_QR_url).then(function saveQR(imgQR) {
-		var pathQR = "/tmp/" + uuid;
+		var pathQR = "/tmp/wxQR_" + uuid;
 		log(1, "Writing QR to file at " + pathQR);
 		fs.writeFile(pathQR, imgQR, "binary", function (e) {
 			if (e) handleError;
@@ -413,7 +652,7 @@ function serveQR(from_QR_url) {
 				fs.readFile(pathQR, function (err, imgQR) {
 					if (err) handleError;
 					else {
-						http.createServer(function (req, res) {
+						serve.createServer(function (req, res) {
 							res.writeHead(200, { "content-type": "image/jpeg" });
 							log(3, "200 GET: QR code requested from local server");
 							res.end(imgQR);
@@ -447,10 +686,11 @@ function checkForScan() {
 		});
 	}, function() {  // Check server for code saying there's been a scan.
 		return new Promise(function (resolve, reject) { 
-			if (typeof tip === "number") {
+			if (typeof tip !== "number") tip = 1;
+			else {
 				log(2, "Checking for response code");
 				tip = 0;
-			} else tip = 1;
+			}
 			var params = {
 				"loginicon": true,
 				"uuid": uuid,
@@ -479,7 +719,6 @@ function checkForScan() {
 							meaning += "Login confirmed, got redirect URL";
 							var temp = values[1].trim();
 							result.url = temp.slice(temp.indexOf("https://"), -1);  
-							//TODO CHECK IF I BROKE THIS
 						} else if (result.code === 201) {
 							meaning += "QR code scanned, confirm login on phone";
 						}
@@ -527,7 +766,7 @@ function handleError(air) {
 
 // Takes domain, path, and then an object with all query parameters in it, and
 // returns a fully formed URL. for GET requests only though.
-function makeURL(domain, path, params, cook) {
+function makeURL(domain, path, params, cook, postDataLen) {
 	path += "?";
 	for (var key in params) {
 		path += key + "=" + params[key] + "&";
@@ -536,17 +775,22 @@ function makeURL(domain, path, params, cook) {
 	if (typeof cook === "undefined") {
 		return "https://" + domain + path;
 	} else {
-		return {
+		var result =  {
 			"hostname": domain,
 			"port": 443,  //443 for https, 80 for http
 			"path": path,
 			"headers": {
 				"User-Agent": USERAGENT,
 				"Connection": "keep-alive",
-				"Cookie": cookies
-				//TODO: consider spoofing user agent?
+				"Cookie": formCookies()
 			}
 		};
+		if (typeof postDataLen !== "undefined") {
+			result["method"] = "POST";
+			result.headers["Content-Length"] = postDataLen;
+			result.headers["Content-Type"] = "application/json;charset=UTF-8";
+		}
+		return result;
 	}
 }
 
@@ -557,11 +801,11 @@ function log(sign, message, output) {
 		result = chalk.green("[+] " + message + "!");
 	} else if (sign > 0) {
 		var temp = "[*] " + message + "...";
-		if (sign % 4 === 1) {  // 1
+		if (sign % 4 === 1) {  // Thread 1
 			result = chalk.cyan(temp);
-		} else if (sign % 4 === 2) {  // 2
+		} else if (sign % 4 === 2) {  // Thread 2
 			result = chalk.yellow(temp);
-		} else if (sign % 4 === 3) {  // 3
+		} else if (sign % 4 === 3) {  // Local program information 3
 			result = chalk.magenta(temp);
 		} else {  // 4
 			result = temp;  // just plain white text... use for Verbose
@@ -596,3 +840,37 @@ function formSyncKeys() {
 	}
 	return result.slice(0, -1);
 }
+
+// Returns a formatted version of the cookies so they can be sent in requests.
+function formCookies() {
+	var result = "";
+	var jar = cookies;
+	for (var i = 0; i < cookies.length; i++) {
+		result += cookies[i].Key + "=" + cookies[i].Val + "; ";
+	}
+	return result.slice(0, -2)  // removes trailing "; "
+}
+
+// Updates the cookies list with cookie objects (inserts and updates)
+function updateCookies(setCookies) {
+	for (var i = 0; i < setCookies.length; i++) {
+		var cookie = setCookies[i].split("; ")[0];  // cookie is now of form: key=value
+		//log(4, "Got cookie: " + cookie); // Verbose
+		var key = cookie.substr(0, cookie.indexOf("="));
+		var value = cookie.substr(cookie.indexOf("=") + 1);
+
+		// If there's an existing cookie with the same key, updates.
+		// otherwise, it will put that cookie into the cookies list.
+		var updated = false;
+		for (var j = 0; j < cookies.length && !updated; j++) {
+			if (key === cookies[j].Key && value !== cookies[j].Val) {
+				cookies[j].Val = value;
+				updated = true;
+			}
+		}
+		if (!updated) { 
+			cookies.push({ "Key": key, "Val": value });
+		}
+	}
+}
+
