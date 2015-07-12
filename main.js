@@ -22,11 +22,13 @@ var WEBDOM  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
 var WEBPATH = "/cgi-bin/mmwebwx-bin/"; 
 var USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
 
+var QRserver;  // QRserver... serves QR code at localhost:8000 (for now)
 var uuid = "";  // UUID associated with QR code  // TODO: consider making this nonglobal
 var cookies = [];  // cookies to be sent in requests.
 var syncKeys;  // Object with List of key/value objects, and Count=List.Length
 var contacts;  // List of user objects.
 var thisUser;  // User object.
+var slctdUser;  // User we're currently watching messages from
 var chatSet;   // comma delimited string of UserName fields of user objects.
 var messages = [];  // List of message objects.
 
@@ -66,7 +68,7 @@ getUUID(the_earl_of_uuid).then(function (gotUUID) {
 	// logs in the user and initializes some things.
 	return webwxinit(loginData).then(function() {  
 		log(2, "Notifying others of login");
-		webwxStatusNotify(loginData);
+		webwxStatusNotify(loginData, 3);
 		log(1, "Getting ContactList");
 		return webwxgetcontact(loginData)  // returns loginData
 	}, handleError);
@@ -91,89 +93,177 @@ function userInterface(loginData) {
 	log(3, "Welcome to WeChat: CLI edition! Now listening to user input");
 	process.stdin.resume();
 	process.stdin.setEncoding("utf8");
-	var action;
+	var oLoop;
+	var iLoop;
 	var wStep;
+	var wNope;
+	var wStay;
 	var rStep;
 	var message;
 	toOuterLoop();
 
 	process.stdin.on("data", function(input) {
 		input = input.trim();
-		if (action === 0) {
+		if (oLoop) {
 			if (input === "q") {
 				process.stdin.pause();
 				log(3, "No longer listening to user input");
 				webwxlogout(loginData);
 				log(1, "Logging out");
 				return;
-			} else if (input === "w") {
-				action = 1;
-			} else if (input === "r") {
-				action = 2;
+			} else if (input === "s") {
+				oLoop = false;
+			} else {
+				toOuterLoop();
 			}
 		} 
-		if (action === 1) {
-			craftMessage(input).then(function(message) {
-				webwxsendmsg(loginData, message);
-				toOuterLoop();
-			}, toOuterLoop);
+		if (!oLoop) {
+			if (iLoop === 0) {
+				if (input === "b") {
+					toOuterLoop();
+				} else if (parseInt(input)) {
+					var contactNum = parseInt(input);
+					if (contactNum > 0 && contactNum < contacts.length + 1) {
+						message.recipient = contacts[contactNum - 1].UserName;
+						slctdUser = message.recipient;
+						iLoop = 1;
+					} else {
+						toInnerLoop();
+					}
+				} else {
+					toInnerLoop();
+				}
+			}
+			if (iLoop === 1) {
+				promiseWhile(function() {
+					return new Promise(function (resolve, reject) {
+						(parseInt(input) === -1 && !wNope) ? reject() : resolve();
+					});
+				}, function() {
+					return new Promise(function (resolve, reject) {
+						craftMessage(input).then(function(message) {
+							webwxsendmsg(loginData, message);
+							toThreadLoop();
+							wStay = true;
+							resolve();
+						}, function(passedWStep) {
+							if (passedWStep && passedWStep !== 1) {
+								toThreadLoop(passedWStep);
+							}
+						});
+					});
+				}, toInnerLoop);
+			}
+
+			//Read.
+			//readMessage(); //TODO... maybe.
+			//toOuterLoop();
 		} 
-		if (action === 2) {
-			readMessage(); //TODO
-			toOuterLoop();
-		}
 	});
 	
-	// Takes the user to the "outer loop" and resets the environment.
-	function toOuterLoop() {
-		action = 0;
-		wStep  = 0;
-		rStep  = 0;
-		message = {
-			"recipient": "",
-			"content": "",
-			"id": 0
-		};
-		log(3, "Type 'r' to Read a message, 'w' to Write one, and 'q' to Quit/logout");
-	}
-
 	// Creates a message to be sent.
 	function craftMessage(input) {
 		return new Promise(function (resolve, reject) {
 			input = input.trim();
+			var type = 1;
 			if (input !== "-1") {
 				if (wStep === 0) {
-					log(3, "To cancel sending a message, type '-1' at any time");
-					log(3, "");
-					listUsers("Send message to whom? (choose the number)");
+					if (!wStay) {
+						toThreadLoop(wStep);
+						listMessageThread();
+					}
 					wStep++;
+					reject(wStep);
 				} else if (wStep === 1) {
 					var number = parseInt(input);
 					if (number && number > 0) {
-						message.recipient = contacts[number - 1].UserName;
+						message.type = number;
 						log(3, "What did you want to say to them?");
-						wStep++;
+						wNope = true;
 					} else {
-						listUsers("Send message to whom? (choose the number)");
+						toThreadLoop();
 					}
+					wStep++;
 				} else if (wStep === 2) {
 					message.content = input;
-					log(0, "Message crafted");
+					//log(0, "Message crafted");  // Verbose
 					message.id = +new Date() + Math.random().toFixed(3).replace(".", "");
-					log(4, "Message: " + JSON.stringify(message));  // Verbose
+					//log(4, "Message: " + JSON.stringify(message));  // Verbose
 					resolve(message);
-					wStep = 0;
 				}
-			} else reject();
+			} else {
+				reject(wStep);
+			}
 		});
+	}
+
+	function listMessageThread() {
+		for (var i = 0; i < messages.length; i++) {
+			var sender = messages[i].FromUserName;
+			var reciever = messages[i].ToUserName;
+			if ((sender === slctdUser) || (reciever === slctdUser)) {
+				var sendTime;
+				if (reciever === slctdUser) {
+					sendTime = parseInt(messages[i].ClientMsgId.slice(0, -4));
+				} else if (sender === slctdUser) {
+					sendTime = messages[i].CreateTime * 1000;
+				} else {
+					log(-1, "Unknown message sendTime");
+					sendTime = +new Date();
+				}
+				var ts = formTimeStamp(sendTime);
+				if (sender === slctdUser) {
+					log(5, ts + messages[i].Content, -1);
+				} else if (reciever === slctdUser) {
+					log(4, ts + messages[i].Content, -1);
+				} else {
+					log(-1, "display msg error: " + ts);
+				}
+			}
+		}
 	}
 
 	// prompts user with the given question, and lists their contacts.
 	function listUsers(question) {
 		log(3, question);
 		for (var i = 0; i < contacts.length; i++) {
-			log(3, "Contact " + (i + 1) + ": " + contacts[i].NickName);
+			log(3, "Contact " + (i + 1) + ": " + contacts[i].NickName, -1);
 		}
+	}
+
+	function toInnerLoop() {
+		toXLoop(false, "Type 'b' to go Back to main menu, otherwise,");
+		slctdUser = "";
+		listUsers("Choose the number of the contact with which you'd like to interact");
+	}
+
+	function toThreadLoop(writePoint) {
+		var m = "Type '-1' to go back to contacts menu at any time during the message send process";
+		m += ". otherwise specify a message type in the form of a number. (1 for plaintext)";
+		toXLoop(false, m, message.recipient);
+		if (writePoint) wStep = 1;
+	}
+	
+	// Takes the user to the "outer loop" and resets the environment.
+	function toOuterLoop() {
+		toXLoop(true, "Type 's' to Select a user to interact with, and 'q' to Quit/logout");
+	}
+
+	// level is boolean for being outer loop or not; message is message to display.
+	function toXLoop(level, instruction, recipient) {
+		oLoop   = level;
+		iLoop   = (recipient ? 1 : 0);
+		wStep   = 0;
+		wNope   = false;
+		wStay   = false;
+		rStep   = 0;
+		message = {
+			"recipient": (recipient ? recipient : ""),
+			"content": "",
+			"type": 1,
+			"id": 0
+		};
+		log(3, instruction, -1);
 	}
 
 	// Prints out a list of messages to read, and prompts the user to read one or not
@@ -301,8 +391,8 @@ function webwxsync(loginData, type) {
 			response.on("end", function() {
 				var jason = JSON.parse(result);
 				//log(1, "webwxsync response: " + JSON.stringify(jason));  // Verbose
-				if (jason.BaseResponse.ErrMsg) {  // TODO: maybe check retcode instead.
-					log(-1, jason.BaseResponse.ErrMsg);
+				if (jason.BaseResponse.Ret !== 0) {
+					log(-1, "webwxsync error: " + jason.BaseResponse.Ret);
 				}
 				// TODO: check type here and get relevant data.
 				// BaseResponse
@@ -316,12 +406,33 @@ function webwxsync(loginData, type) {
 				// Skey
 				if (jason.AddMsgCount !== 0) {
 					for (var i = 0; i < jason.AddMsgList.length; i++) {
-						messages.push(jason.AddMsgList[i]);
+						var currMsg = jason.AddMsgList[i];
+						messages.push(currMsg);
+						if (!currMsg.StatusNotifyCode) {
+						// For only handling plaintext messages here ( && currMsg.MsgType === 1)
+							var from = currMsg.FromUserName;
+							var sender = "<unknown>";
+							for (var j = 0; j < contacts.length; j++) {
+								if (from === contacts[j].UserName) {
+									sender = contacts[j].NickName;
+									j = contacts.length;
+								}
+							}
+							var ts = formTimeStamp(currMsg.CreateTime * 1000);
+							if (typeof slctdUser === "undefined" || from !== slctdUser) {
+								log(3, ts + "Recieved message from \"" + sender + "\"", -1);
+							} else {
+								log(5, ts + currMsg.Content, -1); 
+							}
+
+							webwxStatusNotify(loginData, 1, from);  // TODO
+						}
 					}
 				}
-				if (jason.SyncKey.Count !== syncKeys.Count) {
-					syncKeys = jason.SyncKey;
-				}
+				//if (jason.SyncKey.Count !== syncKeys.Count) {
+				//	syncKeys = jason.SyncKey;
+				//}
+				syncKeys = jason.SyncKey;
 				//log(0, "Synced with type " + type);  // Verbose
 				resolve();
 			});
@@ -344,7 +455,7 @@ function webwxsendmsg(loginData, msg) {
 			"DeviceID": getDeviceID()
 		},
 		"Msg": {
-			"Type": 1,  // TODO: need more type support...
+			"Type": msg.type,  // TODO: need more type support...
 			"Content": msg.content,
 			"FromUserName": thisUser.UserName,
 			"ToUserName": msg.recipient,
@@ -365,10 +476,13 @@ function webwxsendmsg(loginData, msg) {
 		response.on("end", function() {
 			var jason = JSON.parse(result);
 			//log(4, "sendmessage response: " + result);  // Verbose
-			log(0, "Message sent");
+			var ts = formTimeStamp(parseInt(msg.id.slice(0, -4)));
+			log(0, ts + "Message sent");
 			if (jason.BaseResponse.Ret !== 0) {
 				log(-1, "sendmessage error: " + jason.BaseResponse.Ret);
 			}
+
+			messages.push(JSON.parse(postData).Msg);
 			//TODO: want jason.MsgID (the messages' ID within their database)
 			//or to keep msg.id?
 		});
@@ -377,12 +491,13 @@ function webwxsendmsg(loginData, msg) {
 }
 
 // Called when receiving a message. Also once at login.
-function webwxStatusNotify(loginData, stat) {
+function webwxStatusNotify(loginData, statCode, sender) {
 	// StatusNotify is a post request.
 	return new Promise(function (resolve, reject) {
 		var params = {
 			"lang": "en_US"
 		};
+		var from = (typeof sender === "undefined" ? thisUser.UserName : sender);
 		var postData = JSON.stringify({
 			"BaseRequest": {
 				"Uin": loginData.wxuin,
@@ -390,10 +505,9 @@ function webwxStatusNotify(loginData, stat) {
 				"Skey": loginData.skey,
 				"DeviceID": getDeviceID()
 			},
-			// FIXME: take into account stat here, this is just init stuff right now
-			"Code": 3,
+			"Code": statCode,  // 3 for init, 1 for typical messages
 			"FromUserName": thisUser.UserName,
-			"ToUserName": thisUser.UserName,
+			"ToUserName": from,
 			"ClientMsgId": +new Date()
 		});
 		var url = makeURL(WEBDOM, WEBPATH + "webwxstatusnotify", params, 1, postData.length);
@@ -412,7 +526,8 @@ function webwxStatusNotify(loginData, stat) {
 				if (jason.BaseResponse.ErrMsg) {
 					log(-1, jason.BaseResponse.ErrMsg);
 				}
-				log(0, "Other devices notified of login");
+				if (statCode === 3) log(0, "Other devices notified of login");
+				else if (statCode === 1) log(0, "Other devices notified of message");
 				resolve();
 			});
 		}).on("error", handleError);
@@ -435,8 +550,10 @@ function webwxlogout(loginData) {
 			result += chunk;
 		});
 		response.on("end", function() {
-			log(4, "logout result: " + result);  // Verbose
+			//log(4, "logout result: " + result);  // Verbose
+			// ^ this literally sends back nothing.
 			log(0, "Logged out");
+			QRserver.close();
 		});
 	}).on("error", handleError);
 	request.end(postData);
@@ -652,7 +769,7 @@ function serveQR(from_QR_url) {
 				fs.readFile(pathQR, function (err, imgQR) {
 					if (err) handleError;
 					else {
-						serve.createServer(function (req, res) {
+						QRserver = serve.createServer(function (req, res) {
 							res.writeHead(200, { "content-type": "image/jpeg" });
 							log(3, "200 GET: QR code requested from local server");
 							res.end(imgQR);
@@ -800,20 +917,27 @@ function log(sign, message, output) {
 	if (sign === 0) {
 		result = chalk.green("[+] " + message + "!");
 	} else if (sign > 0) {
-		var temp = "[*] " + message + "...";
-		if (sign % 4 === 1) {  // Thread 1
+		var suffix = "...";
+		if (typeof output !== "undefined" && output === -1) {  
+			// if output param is passed and output is -1
+			suffix = ""; 
+		}
+		var temp = "[*] " + message + suffix;
+		if (sign === 1) {  // Thread 1
 			result = chalk.cyan(temp);
-		} else if (sign % 4 === 2) {  // Thread 2
+		} else if (sign === 2) {  // Thread 2
 			result = chalk.yellow(temp);
-		} else if (sign % 4 === 3) {  // Local program information 3
+		} else if (sign === 3) {  // Local program information 3
 			result = chalk.magenta(temp);
-		} else {  // 4
+		} else if (sign === 4) {  // 4
 			result = temp;  // just plain white text... use for Verbose
+		} else if (sign === 5) {
+			result = chalk.inverse(temp);  // received messages
 		}
 	} else {
 		result = chalk.red("[-] " + message + ".");
 	}
-	console.log(result + (output ? " " + output : ""));
+	console.log(result + (output !== -1 && typeof output !== "undefined" ? " " + output : ""));
 }
 
 // Helper method... provide a condition function and a main function. This will
@@ -832,19 +956,19 @@ function promiseWhile(condition, body, onReject) {
 	});
 }
 
+// Returns a formatted version of the SyncKeys so they can be sent in requests
 function formSyncKeys() {
 	var result = "";
 	var list = syncKeys.List;
 	for (var i = 0; i < list.length; i++) {
 		result += list[i].Key + "_" + list[i].Value + "|";
 	}
-	return result.slice(0, -1);
+	return result.slice(0, -1);  // removes trailing "|"
 }
 
 // Returns a formatted version of the cookies so they can be sent in requests.
 function formCookies() {
 	var result = "";
-	var jar = cookies;
 	for (var i = 0; i < cookies.length; i++) {
 		result += cookies[i].Key + "=" + cookies[i].Val + "; ";
 	}
@@ -872,5 +996,16 @@ function updateCookies(setCookies) {
 			cookies.push({ "Key": key, "Val": value });
 		}
 	}
+}
+
+function formTimeStamp(sendTime) {
+	var time = new Date(sendTime);
+	var hh   = time.getHours();
+	var min  = time.getMinutes();
+	var sec  = time.getSeconds();
+	var mm   = (min < 10 ? "0" + min : min);
+	var ss   = (sec < 10 ? "0" + sec : sec);
+	var ts   = "<" + hh + ":" + mm + ":" + ss + "> ";
+	return ts;
 }
 
