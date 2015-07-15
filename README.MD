@@ -1,4 +1,4 @@
-# WeChat Node CLient
+# WeChat Node Client
 
 ## Description:
 
