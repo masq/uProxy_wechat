@@ -1,0 +1,25 @@
+{
+  "name": "wechat-webclient",
+  "version": "0.0.1",
+  "description": "node module as a wechat webclient",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeMasque/uProxy_wechat.git"
+  },
+  "keywords": [
+    "wechat"
+  ],
+  "author": "spencer walden",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/LeMasque/uProxy_wechat/issues"
+  },
+  "homepage": "https://github.com/LeMasque/uProxy_wechat#readme",
+  "devDependencies": {
+    "chalk": "^1.1.0"
+  }
+}
