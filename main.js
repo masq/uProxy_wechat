@@ -12,18 +12,18 @@
 "use strict";
 var serve = require("http"); 
 var https = require("https");
-var	url  = require("url");
 var	fs   = require("fs");
 var chalk = require("chalk");
 
 /********** Globals **********/
+var debug = true;
+
 var LOGDOM  = "login.wechat.com";  // "login.weixin.qq.com" for zh_CN/qq users.
 var WEBDOM  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
 var WEBPATH = "/cgi-bin/mmwebwx-bin/"; 
 var USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
 
 var QRserver;  // QRserver... serves QR code at localhost:8000 (for now)
-var uuid = "";  // UUID associated with QR code  // TODO: consider making this nonglobal
 var cookies = [];  // cookies to be sent in requests.
 var syncKeys;  // Object with List of key/value objects, and Count=List.Length
 var contacts;  // List of user objects.
@@ -33,58 +33,17 @@ var chatSet;   // comma delimited string of UserName fields of user objects.
 var messages = [];  // List of message objects.
 
 /****************************** MAIN EXECUTION THREAD **************************/
-var uuidURLParameters = {
-	"appid": "wx782c26e4c19acffb",
-	"redirect_uri": encodeURIComponent("https://" + WEBDOM + WEBPATH + "webwxnewloginpage"),
-	"fun": "new",
-	"lang": "en_US"
-};
-var the_earl_of_uuid = makeURL(LOGDOM, "/jslogin", uuidURLParameters);
-log(1, "Getting UUID");
-getUUID(the_earl_of_uuid).then(function (gotUUID) {
-	uuid += gotUUID;
-	
-	// Setup and handling of QR code.
-	var the_earl_of_QR = makeURL(LOGDOM, "/qrcode/" + uuid, { "t": "webwx" });
-	log(1, "Getting QR code");
-	serveQR(the_earl_of_QR);
 
-	// Checks to see if the QR code we fetched has been scanned.
-	return checkForScan();  // returns promise.
 
-}, handleError).then(function(redirect_object) {
-	var the_earl_of_login = redirect_object.url + "&fun=new&version=v2";
-	log(1, "Getting login data");
-	return webwxnewloginpage(the_earl_of_login); 
-}, handleError).then(function (loginData) {
-	log(1, "Logging in");
-	//TODO: consider making loginData a global object...?
-	//loginData is of the following form:
-	//"skey": "",
-	//"wxsid": "",
-	//"wxuin": "",
-	//"pass_ticket": ""
-	//
-	// logs in the user and initializes some things.
-	return webwxinit(loginData).then(function() {  
-		log(2, "Notifying others of login");
-		webwxStatusNotify(loginData, 3);
-		log(1, "Getting ContactList");
-		return webwxgetcontact(loginData)  // returns loginData
+getUUID()
+	.then(checkForScan, handleError)
+	.then(webwxnewloginpage, handleError)
+	.then(webwxinit, handleError) // return thing
+	.then(webwxgetcontact, handleError)
+	.then(synccheck, handleError)
+	.then(function (something) {
+		log(-1, "No longer syncchecking", something);
 	}, handleError);
-}, handleError).then(function(loginData) {
-	log(1, "Getting contacts' icons");
-	for (var i = 0; i < contacts.length; i++) {
-		webwxgeticon(contacts[i].HeadImgUrl, i, contacts.length);
-	}	
-	// NOTE: synccheck domain is webpush2.wechat.com, everything else is web(1|2).wech...
-	// TODO: make an input loop for sending messages or logging out.
-	userInterface(loginData);
-	log(2, "Looping to check for updates");
-	return synccheck(loginData);
-}, handleError).then(function (something) {
-	log(-1, "No longer syncchecking", something);
-}, handleError);
 
 /*********************************** FUNCTIONS *********************************/
 
@@ -274,7 +233,9 @@ function userInterface(loginData) {
 
 // Checks to see if there is new data relevant to the current user
 function synccheck(loginData) {
+	log(2, "Looping to check for updates");
 	var retcode = 0;
+	if (debug) userInterface(loginData);
 	return promiseWhile(function() {
 		return new Promise(function (resolve, reject) {
 			if (retcode === 0) resolve(retcode);
@@ -293,8 +254,8 @@ function synccheck(loginData) {
 				"pass_ticket": encodeURIComponent(loginData.pass_ticket)
 			};
 			var syncDom = "webpush2.wechat.com";
-			var the_synCzech_earl = makeURL(syncDom, WEBPATH + "synccheck", syncParams, 1);
-			https.get(the_synCzech_earl, function(response) {
+			var url = makeURL(syncDom, WEBPATH + "synccheck", syncParams, 1);
+			https.get(url, function(response) {
 				var result = "";
 				if (response.headers["set-cookie"]) {
 					updateCookies(response.headers["set-cookie"]);
@@ -493,6 +454,9 @@ function webwxsendmsg(loginData, msg) {
 // Called when receiving a message. Also once at login.
 function webwxStatusNotify(loginData, statCode, sender) {
 	// StatusNotify is a post request.
+	if (statCode === 3) {
+		log(2, "Notifying others of login");
+	}
 	return new Promise(function (resolve, reject) {
 		var params = {
 			"lang": "en_US"
@@ -561,38 +525,48 @@ function webwxlogout(loginData) {
 
 // Gets the icon/photo for a contact, given the friends iconURLPath.
 // also accepts a current and total number of contact icons to get.
-function webwxgeticon(iconURLPath, current, total) {
-	var the_earl_of_iconia = makeURL(WEBDOM, iconURLPath, "", 1);
-	https.get(the_earl_of_iconia, function(response) {
-		if (response.headers["set-cookie"]) {
-			updateCookies(response.headers["set-cookie"]);
-		}
-		response.setEncoding("binary");
-		var result = "";
-		response.on("error", handleError);
-		response.on("data", function(chunk) {
-			result += chunk;
-		});
-		response.on("end", function() {
-			var begin = iconURLPath.indexOf("username=") + "username=".length;
-			var end = iconURLPath.indexOf("&skey=");
-			var iconPath = iconURLPath.substring(begin, end);
-			fs.writeFile("/tmp/wxicon_" + iconPath, result, "binary", function (e) {
-				if (e) handleError;
-				else {
-					if (typeof current !== "undefined" && typeof total !== "undefined") {
-						log(0, "Icon " + (current + 1) + " of " + total + " successfully written");
-					} else {
-						log(0, "Icon successfully written");
-					}
-				}
+function webwxgeticon() {
+	log(1, "Getting contacts' icons");
+	var completed = [];
+	var max = contacts.length;
+	for (var i = 0; i < max; i++) {
+		var iconURLPath = contacts[i].HeadImgUrl;
+		var the_earl_of_iconia = makeURL(WEBDOM, iconURLPath, "", 1);
+		completed.push(false);
+		https.get(the_earl_of_iconia, function(response) {
+			if (response.headers["set-cookie"]) {
+				updateCookies(response.headers["set-cookie"]);
+			}
+			response.setEncoding("binary");
+			var result = "";
+			response.on("error", handleError);
+			response.on("data", function(chunk) {
+				result += chunk;
 			});
-		});
-	}).on("error", handleError);
+			response.on("end", function() {
+				var begin = iconURLPath.indexOf("username=") + "username=".length;
+				var end = iconURLPath.indexOf("&skey=");
+				var iconPath = iconURLPath.substring(begin, end);
+				fs.writeFile("/tmp/wxicon_" + iconPath, result, "binary", function (e) {
+					if (e) handleError;
+					else {
+						for (var j = 0; j < max; j++) {
+							if (!completed[j]) {
+								completed[j] = true;
+								log(0, "Icon " + (j + 1) + " of " + max + " successfully written");
+								j = max;
+							}
+						}
+					}
+				});
+			});
+		}).on("error", handleError);
+	}
 }
 
 // Gets contact list.
 function webwxgetcontact(loginData) {
+	log(1, "Getting ContactList");
 	return new Promise(function (resolve, reject) {
 		var clParams = {
 			"lang": "en_US",
@@ -600,9 +574,9 @@ function webwxgetcontact(loginData) {
 			"r": +new Date(),
 			"skey": loginData.skey
 		};
-		var the_earl_of_contax = makeURL(WEBDOM, WEBPATH + "webwxgetcontact", clParams, 1);
+		var url = makeURL(WEBDOM, WEBPATH + "webwxgetcontact", clParams, 1);
 		//log(4, JSON.stringify(the_earl_of_contax));  // Verbose
-		https.get(the_earl_of_contax, function(response) {
+		https.get(url, function(response) {
 			var result = "";
 			if (response.headers["set-cookie"]) {
 				updateCookies(response.headers["set-cookie"]);
@@ -619,6 +593,7 @@ function webwxgetcontact(loginData) {
 				}
 				contacts = jason.MemberList;
 				log(0, "Got ContactList");
+				webwxgeticon();
 				resolve(loginData);
 			});
 		}).on("error", handleError);
@@ -634,7 +609,9 @@ function webwxgetcontact(loginData) {
 //
 // returns a promise, resolved with an object containing skey, sid, uin, pass_ticket.
 // sets cookies in the form of one long string separated by "; ", in key=value format.
-function webwxnewloginpage(url) {
+function webwxnewloginpage(redirectURL) {
+	var url = redirectURL + "&fun=new&version=v2";
+	log(1, "Getting login data");
 	return new Promise(function (resolve, reject) {
 		https.get(url, function(response) {
 			var xml = "";
@@ -646,24 +623,24 @@ function webwxnewloginpage(url) {
 				xml += chunk;
 			});
 			response.on("end", function() {
-				var result = {
+				var loginData = {
 					"skey": "",
 					"wxsid": "",
 					"wxuin": "",
 					"pass_ticket": ""
 				};
-				for (var key in result) {
+				for (var key in loginData) {
 					var openTag  = "<" + key + ">";
 					var closeTag = "</" + key + ">";
 					var begin = xml.indexOf(openTag) + openTag.length;
 					var end   = xml.indexOf(closeTag);
 					var value = xml.substring(begin, end);
-					result[key] = value; 
+					loginData[key] = value; 
 					log(4, "Got xml data: " + key + " = " + value);  // Verbose
 				}
 				log(4, "Cookies: " + formCookies());  // Verbose
 				log(0, "Got login data");
-				resolve(result);
+				resolve(loginData);
 			});
 		}).on("error", handleError);
 	});
@@ -674,6 +651,7 @@ function webwxnewloginpage(url) {
 // returns a Promise
 function webwxinit(loginData) {
 	// init is a post request.
+	log(1, "Logging in");
 	return new Promise(function (resolve, reject) {
 		var params = {
 			"r": ~new Date(),
@@ -711,7 +689,8 @@ function webwxinit(loginData) {
 				syncKeys = jason.SyncKey;
 				chatSet  = jason.ChatSet;
 				log(0, "\"" + thisUser.NickName + "\" is now logged in");
-				resolve();
+				webwxStatusNotify(loginData, 3);
+				resolve(loginData);
 			});
 		}).on("error", handleError);
 		request.end(postData);
@@ -719,7 +698,15 @@ function webwxinit(loginData) {
 }
 
 // Gets the uuid for the session.
-function getUUID(url) {
+function getUUID() {
+	var uuidURLParameters = {
+		"appid": "wx782c26e4c19acffb",
+		"redirect_uri": encodeURIComponent("https://" + WEBDOM + WEBPATH + "webwxnewloginpage"),
+		"fun": "new",
+		"lang": "en_US"
+	};
+	var url = makeURL(LOGDOM, "/jslogin", uuidURLParameters);
+	log(1, "Getting UUID");
 	return new Promise(function(resolve, reject) {
 		var data = "";
 		var result = "";
@@ -758,8 +745,10 @@ function getQR(url) {
 
 // Gets the QR code corresponding to the given UUID, Saves the QR code to disk,
 // and then creates a server displaying it.
-function serveQR(from_QR_url) {
-	getQR(from_QR_url).then(function saveQR(imgQR) {
+function serveQR(uuid) {
+	var url = makeURL(LOGDOM, "/qrcode/" + uuid, { "t": "webwx" });
+	log(1, "Getting QR code");
+	getQR(url).then(function saveQR(imgQR) {
 		var pathQR = "/tmp/wxQR_" + uuid;
 		log(1, "Writing QR to file at " + pathQR);
 		fs.writeFile(pathQR, imgQR, "binary", function (e) {
@@ -789,7 +778,9 @@ function serveQR(from_QR_url) {
 // up when this QR expires, which means we need to start this whole process over.
 //
 // returns promise.
-function checkForScan() {
+function checkForScan(uuid) {
+	log(1, uuid);
+	serveQR(uuid);
 	var result = { "code": 999 };  //initialize to nonexistant http code.
 	var tip;  
 	log(2, "Checking for response codes indicating QR code scans");
@@ -859,7 +850,8 @@ function checkForScan() {
 		return new Promise(function (resolve, reject) {
 			// When we reject the condition, we got the redirect url.
 			if (onRejectparam.code === 200) {
-				resolve(onRejectparam); // resolve with object containing url.
+				resolve(onRejectparam.url); // resolve with url.
+				//events["onScanComplete"](onRejectparam.url); TODO
 			} else handleError(onRejectparam);
 		});
 	});
