@@ -2,7 +2,7 @@
   "name": "wechat-webclient",
   "version": "0.0.2",
   "description": "node module as a wechat webclient",
-  "main": "main.js",
+  "main": "wechat.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
