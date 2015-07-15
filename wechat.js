@@ -10,7 +10,7 @@
 
 /********** Requires **********/
 "use strict";
-var serve = require("http"); 
+var serve = require("http");
 var https = require("https");
 var	fs   = require("fs");
 var chalk = require("chalk");
@@ -22,7 +22,7 @@ var weChatClient = function() {
 
 	this.LOGDOM  = "login.wechat.com";  // "login.weixin.qq.com" for zh_CN/qq users.
 	this.WEBDOM  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
-	this.WEBPATH = "/cgi-bin/mmwebwx-bin/"; 
+	this.WEBPATH = "/cgi-bin/mmwebwx-bin/";
 	this.USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
 
 	this.handlers = {};
@@ -52,7 +52,7 @@ weChatClient.prototype.synccheck = function(loginData) {
 		return new Promise(function (resolve, reject) {
 			if (retcode === 0) resolve(retcode);
 			else reject(retcode);
-		});	
+		});
 	}, function() {
 		return new Promise(function (resolve, reject) {
 			var syncParams = {  // #encodeeverythingthatwalks
@@ -79,15 +79,15 @@ weChatClient.prototype.synccheck = function(loginData) {
 				response.on("end", function() {
 					//this.log(4, "Synccheck response: " + result);  // Verbose
 					var fields = result.split("=")[1].trim().slice(1, -1).split(",");
-					retcode  = parseInt(fields[0].split(":")[1].slice(1,-1));
-					var type = parseInt(fields[1].split(":")[1].slice(1,-1));
+					retcode  = parseInt(fields[0].split(":")[1].slice(1,-1), 10);
+					var type = parseInt(fields[1].split(":")[1].slice(1,-1), 10);
 					//this.log(2, "SyncCheck: { Retcode: " + retcode + ", Selector: " + type + " }");  // Verbose
 					if (retcode !== 0) this.log(-1, "Synccheck error code: " + retcode);
 					if (type === 0) {  // when selector is zero, just loop again.
 						this.log(-1, "Syncchecked with type " + type + ". No new info..");
 						resolve();
 					} else {
-						// sendmessage just happens, 
+						// sendmessage just happens,
 						// webwxsync gets data based on Selector passed by synccheck.
 						// possibly need to call StatusNotify on certain Selectors
 						// to recieve messages... TBD
@@ -103,7 +103,7 @@ weChatClient.prototype.synccheck = function(loginData) {
 						//	MMWEBWX_ERR_SESSION_INVALID = 1101,
 						//	MMWEBWX_ERR_PARSER_REQUEST = 1200,
 						//	MMWEBWX_ERR_FREQ = 1205 // 频率拦截
-						
+
 						resolve(this.webwxsync(loginData, type));
 					}
 				}.bind(this));
@@ -117,7 +117,7 @@ weChatClient.prototype.synccheck = function(loginData) {
 				this.log(-1, "Attempted to synccheck an invalid session");
 			} else if (retcode === 1200) {
 				this.log(-1, "Webservice couldn't understand your request.");
-			} 
+			}
 			this.handleError(retcode);
 		}
 	}.bind(this));
@@ -125,7 +125,7 @@ weChatClient.prototype.synccheck = function(loginData) {
 
 // takes type selector to select a corresponding type of data from the response to
 // possibly store.
-// is POST request to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query 
+// is POST request to web2.wechat.com/cgi-bin/mmwebwx-bin/webwxsync with query
 // parameters of sid, skey, lang, and pass_ticket, and postData of BaseRequest, syncKey
 // object, and the bitflip of the currrent time.
 //		syncKey has a count field which is the amount of keys, and then the list
@@ -197,7 +197,7 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
 								if (!this.slctdUser || from !== this.slctdUser) {
 									this.log(3, ts + "Recieved message from \"" + sender + "\"", -1);
 								} else {
-									this.log(5, ts + currMsg.Content, -1); 
+									this.log(5, ts + currMsg.Content, -1);
 								}
 								this.webwxStatusNotify(loginData, 1, from);
 							}
@@ -446,7 +446,7 @@ weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
 					var begin = xml.indexOf(openTag) + openTag.length;
 					var end   = xml.indexOf(closeTag);
 					var value = xml.substring(begin, end);
-					loginData[key] = value; 
+					loginData[key] = value;
 					this.log(4, "Got xml data: " + key + " = " + value);  // Verbose
 				}
 				this.log(4, "Cookies: " + this.formCookies());  // Verbose
@@ -540,7 +540,7 @@ weChatClient.prototype.getQR = function(uuid) {
 	var url = this.makeURL(this.LOGDOM, "/qrcode/" + uuid, { "t": "webwx" });
 	this.log(1, "Getting QR code");
 	return new Promise(function(resolve, reject) {
-		var imgQR  = ""; 
+		var imgQR  = "";
 		https.get(url, function(response) {
 			response.setEncoding("binary");
 			response.on("error", this.handleError);
@@ -583,7 +583,7 @@ weChatClient.prototype.serveQR = function(uuid) {
 
 
 // Pings server for indication of the QR code being scanned. Upon being scanned,
-// gets a response code of 201, and  200 when confirmed. A response code of 408 
+// gets a response code of 201, and  200 when confirmed. A response code of 408
 // shows up when the ping "expires", and another ping needs to be sent. 400 shows
 // up when this QR expires, which means we need to start this whole process over.
 //
@@ -591,7 +591,7 @@ weChatClient.prototype.serveQR = function(uuid) {
 weChatClient.prototype.checkForScan = function(uuid) {
 	this.serveQR(uuid);
 	var result = { "code": 999 };  //initialize to nonexistant http code.
-	var tip;  
+	var tip;
 	this.log(2, "Checking for response codes indicating QR code scans");
 	return this.promiseWhile(function() {
 		return new Promise(function (resolve, reject) {
@@ -599,10 +599,10 @@ weChatClient.prototype.checkForScan = function(uuid) {
 			if ((result.code !== 400) && (!result.url))
 				resolve(result);
 			else  // Want this case, means we got redirect url.
-				reject(result); 
+				reject(result);
 		});
 	}, function() {  // Check server for code saying there's been a scan.
-		return new Promise(function (resolve, reject) { 
+		return new Promise(function (resolve, reject) {
 			if (typeof tip !== "number") tip = 1;
 			else {
 				this.log(2, "Checking for response code");
@@ -630,12 +630,12 @@ weChatClient.prototype.checkForScan = function(uuid) {
 					var sign;
 					var respCode = "Got response code " + result.code + ": ";
 					var meaning  = "";
-					if (parseInt(result.code / 100) === 2) {  
+					if (parseInt(result.code / 100) === 2) {
 						sign = 0;
 						if (result.code === 200) {
 							meaning += "Login confirmed, got redirect URL";
 							var temp = values[1].trim();
-							result.url = temp.slice(temp.indexOf("https://"), -1);  
+							result.url = temp.slice(temp.indexOf("https://"), -1);
 						} else if (result.code === 201) {
 							meaning += "QR code scanned, confirm login on phone";
 						}
@@ -650,7 +650,7 @@ weChatClient.prototype.checkForScan = function(uuid) {
 							meaning += "Nothing eventful, QR code not scanned usually";
 						}
 					}
-					this.log(sign, respCode + (!meaning ? "Abnormal code" : meaning)); 
+					this.log(sign, respCode + (!meaning ? "Abnormal code" : meaning));
 					resolve(result);
 				}.bind(this));
 			}.bind(this)).on("error", this.handleError);
@@ -690,7 +690,7 @@ weChatClient.prototype.makeURL = function(domain, path, params, cook, postDataLe
 	for (var key in params) {
 		path += key + "=" + params[key] + "&";
 	}
-	path = path.slice(0, -1); // removes trailing & or ? 
+	path = path.slice(0, -1); // removes trailing & or ?
 	if (!cook) {
 		return "https://" + domain + path;
 	} else {
@@ -720,9 +720,9 @@ weChatClient.prototype.log = function(sign, message, output) {
 		result = chalk.green("[+] " + message + "!");
 	} else if (sign > 0) {
 		var suffix = "...";
-		if (output && output === -1) {  
+		if (output && output === -1) {
 			// if output param is passed and output is -1
-			suffix = ""; 
+			suffix = "";
 		}
 		var temp = "[*] " + message + suffix;
 		if (sign === 1) {  // Thread 1
@@ -748,7 +748,7 @@ weChatClient.prototype.promiseWhile = function(condition, body, onReject) {
     return new Promise(function (resolve,reject) {
 		function loop() {
 			condition().then(function (result) {
-				// When it completes, loop again. Reject on failure... 
+				// When it completes, loop again. Reject on failure...
 				body().then(loop, reject);
 			}, function (result) {
 				resolve(onReject(result));
@@ -780,10 +780,10 @@ weChatClient.prototype.formCookies = function() {
 // Updates the cookies list with cookie objects (inserts and updates)
 weChatClient.prototype.updateCookies = function(setCookies) {
 	for (var i = 0; i < setCookies.length; i++) {
-		
+
 		var cookie = setCookies[i].split("; ")[0];  // cookie is now of form: key=value
 		//this.log(4, "Got cookie: " + cookie); // Verbose
-		
+
 		// don't use split here in case the value of cookie has an "=" in it.
 		// instead, get the index of the first occurance of "=" and separate.
 		var key = cookie.substr(0, cookie.indexOf("="));
@@ -798,7 +798,7 @@ weChatClient.prototype.updateCookies = function(setCookies) {
 				updated = true;
 			}
 		}
-		if (!updated) { 
+		if (!updated) {
 			this.cookies.push({ "Key": key, "Val": value });
 		}
 	}
@@ -815,4 +815,3 @@ weChatClient.prototype.formTimeStamp = function(sendTime) {
 	var ts   = "<" + hh + ":" + mm + ":" + ss + "> ";
 	return ts;
 }
-
