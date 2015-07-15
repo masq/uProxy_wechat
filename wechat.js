@@ -40,7 +40,7 @@ module.exports.weChatClient = weChatClient;
 /*********************************** FUNCTIONS *********************************/
 
 
-weChatClient.prototype.addEventListener(event_name, handler) {
+weChatClient.prototype.addEventListener = function(event_name, handler) {
 	this.handlers[event_name] = handler;
 }
 
@@ -81,7 +81,7 @@ weChatClient.prototype.synccheck = function(loginData) {
 					var fields = result.split("=")[1].trim().slice(1, -1).split(",");
 					retcode  = parseInt(fields[0].split(":")[1].slice(1,-1));
 					var type = parseInt(fields[1].split(":")[1].slice(1,-1));
-					//this.log(2, "SyncCheck: { Retcode: " + retcode + ", Selector: " + type + " }");  // Verbose
+					this.log(2, "SyncCheck: { Retcode: " + retcode + ", Selector: " + type + " }");  // Verbose
 					if (retcode !== 0) this.log(-1, "Synccheck error code: " + retcode);
 					if (type === 0) {  // when selector is zero, just loop again.
 						this.log(-1, "Syncchecked with type " + type + ". No new info..");
@@ -200,6 +200,11 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
 									this.log(5, ts + currMsg.Content, -1); 
 								}
 								this.webwxStatusNotify(loginData, 1, from);
+
+								// TODO: 
+								// this sends an incoming message to the handler function
+								//this.handlers["onMessage"](currMsg);
+
 							}
 						}
 					}
@@ -488,19 +493,23 @@ weChatClient.prototype.webwxinit = function (loginData) {
 				data += chunk;
 			});
 			response.on("end", function() {
-				//this.log(2, "data: " + data);  // verbose
-				var jason = JSON.parse(data);
-				if (jason.BaseResponse.Ret) {
-					this.log(-1, jason.BaseResponse.Ret);
-				}
-				//contacts = jason.ContactList;
-				// this gets less contacts than webwxgetcontact, but it DOES get
-				// the file transfer agent's user, whereas webwxgetcontact does not.
-				this.thisUser = jason.User;
-				this.syncKeys = jason.SyncKey;
-				this.log(0, "\"" + this.thisUser.NickName + "\" is now logged in");
-				this.webwxStatusNotify(loginData, 3);
-				resolve(loginData);
+        try {
+          //this.log(2, "data: " + data);  // verbose
+          var jason = JSON.parse(data);
+          if (jason.BaseResponse.Ret) {
+            this.log(-1, jason.BaseResponse.Ret);
+          }
+          //contacts = jason.ContactList;
+          // this gets less contacts than webwxgetcontact, but it DOES get
+          // the file transfer agent's user, whereas webwxgetcontact does not.
+          this.thisUser = jason.User;
+          this.syncKeys = jason.SyncKey;
+          this.log(0, "\"" + this.thisUser.NickName + "\" is now logged in");
+          this.webwxStatusNotify(loginData, 3);
+          resolve(loginData);
+        } catch (e) {
+          handleError(e);
+        }
 			}.bind(this));
 		}.bind(this)).on("error", this.handleError);
 		request.end(postData);
