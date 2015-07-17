@@ -5,9 +5,9 @@ var wechat = require("./wechat.js");
 var weChatClient = new wechat.weChatClient();
 
 weChatClient.getUUID()
-	.then(weChatClient.checkForScan.bind(weChatClient), weChatClient.handleError) // doesn't.
+	.then(weChatClient.checkForScan.bind(weChatClient), weChatClient.handleError)
 	.then(weChatClient.webwxnewloginpage.bind(weChatClient), weChatClient.handleError)
-	.then(weChatClient.webwxinit.bind(weChatClient), weChatClient.handleError) // return thing
+	.then(weChatClient.webwxinit.bind(weChatClient), weChatClient.handleError) 
 	.then(weChatClient.webwxgetcontact.bind(weChatClient), weChatClient.handleError)
 	.then(function(stuff) { 
 		userInterface(stuff);
@@ -16,6 +16,45 @@ weChatClient.getUUID()
 	.then(function (something) {
 		weChatClient.log(-1, "No longer syncchecking", something);
 	}, weChatClient.handleError);
+
+function saveIcon(iconURLPath) {
+  var begin = iconURLPath.indexOf("username=") + "username=".length;
+  var end = iconURLPath.indexOf("&skey=");
+  var iconPath = iconURLPath.substring(begin, end);
+  fs.writeFile("/tmp/wxicon_" + iconPath, result, "binary", function (e) {
+    if (e) this.handleError;
+    else {
+      for (var j = 0; j < max; j++) {
+        if (!completed[j]) {
+          completed[j] = true;
+          this.log(0, "Icon " + (j + 1) + " of " + max + " successfully written");
+          j = max;
+        }
+      }
+    }
+  }.bind(this));
+}
+function saveQR(imgQR) {
+  var pathQR = "/tmp/wxQR_" + uuid;
+  this.log(1, "Writing QR to file at " + pathQR);
+  fs.writeFile(pathQR, imgQR, "binary", function (e) {
+    if (e) this.handleError;
+    else {
+      this.log(0, "QR successfully written");
+      fs.readFile(pathQR, function (err, imgQR) {
+        if (err) this.handleError;
+        else {
+          this.QRserver = serve.createServer(function (req, res) {
+            res.writeHead(200, { "content-type": "image/jpeg" });
+            this.log(3, "200 GET: QR code requested from local server");
+            res.end(imgQR);
+          }.bind(this)).listen(8000);
+          this.log(1, "QR code can be scanned at http://localhost:8000");
+        }
+      }.bind(this));
+    }
+  }.bind(this));
+}.bind(this);
 
 
 function userInterface(loginData) {
@@ -47,7 +86,7 @@ function userInterface(loginData) {
 			}
 		} 
 		if (!oLoop) {
-			if (iLoop === 0) {
+			if (!iLoop) {
 				if (input === "b") {
 					toOuterLoop();
 				} else if (parseInt(input)) {
@@ -55,7 +94,7 @@ function userInterface(loginData) {
 					if (contactNum > 0 && contactNum < weChatClient.contacts.length + 1) {
 						message.recipient = weChatClient.contacts[contactNum - 1].UserName;
 						weChatClient.slctdUser = message.recipient;
-						iLoop = 1;
+						iLoop = true;
 					} else {
 						toInnerLoop();
 					}
@@ -63,7 +102,7 @@ function userInterface(loginData) {
 					toInnerLoop();
 				}
 			}
-			if (iLoop === 1) {
+			if (iLoop) {
 				weChatClient.promiseWhile(function() {
 					return new Promise(function (resolve, reject) {
 						(parseInt(input) === -1 && !wNope) ? reject() : resolve();
@@ -177,13 +216,13 @@ function userInterface(loginData) {
 	// level is boolean for being outer loop or not; message is message to display.
 	function toXLoop(level, instruction, recipient) {
 		oLoop   = level;
-		iLoop   = (recipient ? 1 : 0); // TODO: make boolean
+		iLoop   = (recipient ? true : false); 
 		wStep   = 0;
 		wNope   = false;
 		wStay   = false;
 		rStep   = 0;
 		message = {
-			"recipient": (recipient ? recipient : ""),
+			"recipient": recipient || "",
 			"content": "",
 			"type": 1,
 			"id": 0
