@@ -33,7 +33,7 @@ var weChatClient = function() {
   this.QRserver = null;  // QRserver... serves QR code at localhost:8000 (for now)
   this.cookies = [];  // cookies to be sent in requests.
   this.syncKeys = null;  // Object with List of key/value objects, and Count=List.Length
-  this.contacts = null;  // List of user objects.
+  this.contacts = [];  // List of user objects.
   this.thisUser = null;  // User object.
   this.slctdUser = null;  // User we're currently watching messages from
   this.messages = [];  // List of message objects.
@@ -190,18 +190,7 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
                 for (var j = 0; j < this.contacts.length; j++) {
                   if (from === this.contacts[j].UserName) {
                     sender = this.contacts[j].NickName;
-                    var now = +new Date();
-                    var eventMessage = {
-                      "from": {
-                        "userId": from,
-                        "clientId": "", // TODO
-                        "status": "ONLINE",
-                        "lastUpdated": now,
-                        "lastSeen": now
-                      },
-                      "message": currMsg.Content
-                    }
-                    this.events.onMessage(eventMessage);
+                    this.events.onMessage(currMsg);
                     j = this.contacts.length;
                   }
                 }
@@ -212,11 +201,6 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
                   this.log(5, ts + currMsg.Content, -1);
                 }
                 this.webwxStatusNotify(loginData, 1, from);
-
-                // TODO: 
-                // this sends an incoming message to the handler function
-                //this.events.onMessage(currMsg.Content);
-
               }
             }
           }
@@ -405,15 +389,23 @@ weChatClient.prototype.webwxgetcontact = function (loginData, noGetIcon) {
         result += chunk;
       });
       response.on("end", function() {
-        var jason = JSON.parse(result);
-        //this.log(4, "Contacts received: " + JSON.stringify(jason));  // Verbose
-        if (jason.BaseResponse.ErrMsg) {
-          this.log(-1, jason.BaseResponse.ErrMsg);
+        try {
+          var jason = JSON.parse(result);
+          //this.log(4, "Contacts received: " + JSON.stringify(jason));  // Verbose
+          if (jason.BaseResponse.ErrMsg) {
+            this.log(-1, jason.BaseResponse.ErrMsg);
+          }
+          for (var i = 0; i < jason.MemberList.length; i++) {
+            if (jason.MemberList[i].UserName.startsWith("@")) {
+              this.contacts.push(jason.MemberList[i]);
+            }
+          }
+          this.log(0, "Got ContactList");
+          if (!noGetIcon) this.webwxgeticon();
+          resolve(loginData);
+        } catch (e) {
+          this.handleError(e);
         }
-        this.contacts = jason.MemberList;
-        this.log(0, "Got ContactList");
-        if (!noGetIcon) this.webwxgeticon();
-        resolve(loginData);
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
   }.bind(this));
