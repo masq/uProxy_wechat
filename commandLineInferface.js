@@ -34,6 +34,10 @@ function saveIcon(iconURLPath) {
     }
   }.bind(this));
 }
+
+// FIXME FIXME FIXME
+
+
 function saveQR(imgQR) {
   var pathQR = "/tmp/wxQR_" + uuid;
   this.log(1, "Writing QR to file at " + pathQR);
@@ -151,7 +155,6 @@ function userInterface(loginData) {
 				} else if (wStep === 2) {
 					message.content = input;
 					//log(0, "Message crafted");  // Verbose
-					message.id = +new Date() + Math.random().toFixed(3).replace(".", "");
 					//log(4, "Message: " + JSON.stringify(message));  // Verbose
 					resolve(message);
 				}
@@ -173,7 +176,7 @@ function userInterface(loginData) {
 					sendTime = weChatClient.messages[i].CreateTime * 1000;
 				} else {
 					weChatClient.log(-1, "Unknown message sendTime");
-					sendTime = +new Date();
+					sendTime = Date.now();
 				}
 				var ts = weChatClient.formTimeStamp(sendTime);
 				if (sender === weChatClient.slctdUser) {
@@ -224,8 +227,7 @@ function userInterface(loginData) {
 		message = {
 			"recipient": recipient || "",
 			"content": "",
-			"type": 1,
-			"id": 0
+			"type": 1
 		};
 		weChatClient.log(3, instruction, -1);
 	}
