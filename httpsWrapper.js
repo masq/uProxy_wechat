@@ -40,14 +40,12 @@ https.prototype.request = function(url, callback) {
     };
     (isBinary ? xhr.getResponse() : xhr.getResponseText()).then(function(responseData) {
       response.on = function(eventName, onCallback) {
-        if (isBinary && eventName !== "error") {
+        if (eventName === "data") {
+          if (isBinary) {
             // TODO: see if there is a better way to make the "data" event promise-able, so we 
             // don't make the "end" event get called when not all of the data has been processed.
             // Right now, I'm just running through this code twice for "data" and "end". 
             // If it's the end though, I don't pass anything back.
-            if (eventName === "data") {
-            xhr.getResponseHeader("Content-Type").then(console.log, console.error);
-            xhr.getResponseHeader("Content-Length").then(console.log, console.error);
             var bytes = new Uint8Array(responseData.string.length);
             var magicNum = "";
             var dataString = "";
@@ -69,28 +67,20 @@ https.prototype.request = function(url, callback) {
               mimeType = "image/webp";
               console.log("Unsupported image type: " + magicNum);
             }
-            var image = new Blob([bytes], {type: mimeType}); 
-            var imageURL = URL.createObjectURL(image); // just to see breakage.
+            var blob = new Blob([bytes], {type: mimeType}); 
+            var blobURL = URL.createObjectURL(blob); // just to see breakage.
             var dataURL = "data:" + mimeType + ";base64," + btoa(dataString);
-            console.log("[+] imageURL: type=" + (typeof imageURL) + " => " + imageURL);
-            console.log("[+] dataURL: type=" + (typeof dataURL) + " => " + dataURL);
             var imageResult = {
               "iconURLPath": url.path,
-              "imageURL": imageURL,
+              "blobURL": blobURL,
               "dataURL": dataURL
             };
-            console.log("end Data");
             onCallback(JSON.stringify(imageResult));
           } else {
-            console.log("end End");
-            onCallback();
-          }
-        } else {
-          if (eventName === "data") {
             onCallback(responseData);
-          } else if (eventName === "end") {
-            onCallback();
           }
+        } else if (eventName === "end") {
+          onCallback();
         }
       }.bind(this);
       callback(response);
@@ -115,30 +105,5 @@ https.prototype.request = function(url, callback) {
   };
   return request;
 }.bind(this);
-
-
-https.prototype.b64toBlob = function (b64Data, contentType, sliceSize) {
-  contentType = contentType || '';
-  sliceSize = sliceSize || 512;
-
-  var byteCharacters = atob(b64Data);
-  var byteArrays = [];
-
-  for (var offset = 0; offset < byteCharacters.length; offset += sliceSize) {
-    var slice = byteCharacters.slice(offset, offset + sliceSize);
-
-    var byteNumbers = new Array(slice.length);
-    for (var i = 0; i < slice.length; i++) {
-      byteNumbers[i] = slice.charCodeAt(i);
-    }
-
-    var byteArray = new Uint8Array(byteNumbers);
-
-    byteArrays.push(byteArray);
-  }
-
-  var blob = new Blob(byteArrays, {type: contentType});
-  return blob;
-}
 
 module.exports.https = https;

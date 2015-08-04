@@ -24,6 +24,7 @@ var weChatClient = function() {
   this.WEBPATH = "/cgi-bin/mmwebwx-bin/";
   this.SYNCDOM = "webpush2.wechat.com";
   this.USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
+  this.HIDDENMSGTYPE = 51;  // As of July 23, 2015.
 
   this.events = {};
   this.events.onMessage = function(message) { return; };
@@ -188,34 +189,32 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
               var currMsg = jason.AddMsgList[i];
               this.messages.push(currMsg);
               if (!currMsg.StatusNotifyCode) {
-                // For only handling plaintext messages here ( && currMsg.MsgType === 1)
+                // For only handling x type messages here ( && currMsg.MsgType === x)
                 var from = currMsg.FromUserName;
                 var sender = "<unknown>";
                 for (var j = 0; j < this.contacts.length; j++) {
                   if (from === this.contacts[j].UserName) {
                     sender = this.contacts[j].NickName;
-                    this.events.onMessage(currMsg);
-                    j = this.contacts.length;
+
+                    j = this.contacts.length;  // ends loop early when match found.
                   }
                 }
+                this.webwxStatusNotify(loginData, 1, from);
+                this.events.onMessage(currMsg);
                 var ts = this.formTimeStamp(currMsg.CreateTime * 1000);
                 if (!this.slctdUser || from !== this.slctdUser) {
                   this.log(3, ts + "Recieved message from \"" + sender + "\"", -1);
                 } else {
                   this.log(5, ts + currMsg.Content, -1);
                 }
-                this.webwxStatusNotify(loginData, 1, from);
               }
             }
           }
-          //if (jason.SyncKey.Count !== syncKeys.Count) {
-          //  syncKeys = jason.SyncKey;
-          //}
           this.syncKeys = jason.SyncKey;
           //this.log(0, "Synced with type " + type);  // Verbose
           resolve();
         } catch (air) {
-          handleError(air);
+          this.handleError(air);
         }
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
@@ -228,56 +227,60 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
 // msg is an object with an integer type (1 for plaintext, 51 for hidden), a string content, and
 // a recipient taken from the contacts list (or any other wechat UserName).
 weChatClient.prototype.webwxsendmsg = function (loginData, msg) {
-  var id = this.getMessageId();
-  var params = {
-    "lang": "en_US",
-    "pass_ticket": loginData.pass_ticket
-  };
-  var postData = JSON.stringify({
-    "BaseRequest": {
-      "Uin": loginData.wxuin,
-      "Sid": loginData.wxsid,
-      "Skey": loginData.skey,
-      "DeviceID": this.getDeviceID()
-    },
-    "Msg": {
-      "Type": msg.type,
-      "Content": msg.content,
-      "FromUserName": this.thisUser.UserName,
-      "ToUserName": msg.recipient,
-      "LocalID": id,
-      "ClientMsgId": id
-    }
-  });
-  var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxsendmsg", params, postData.length);
-  var request = https.request(url, function(response) {
-    var result = "";
-    if (response.headers["set-cookie"]) {
-      this.updateCookies(response.headers["set-cookie"]);
-    }
-    response.on("error", this.handleError);
-    response.on("data", function(chunk) {
-      result += chunk;
-    });
-    response.on("end", function() {
-      try {
-        var jason = JSON.parse(result);
-        //this.log(4, "sendmessage response: " + result);  // Verbose
-        var ts = this.formTimeStamp(parseInt(id.slice(0, -4)));
-        this.log(0, ts + "Message sent");
-        if (jason.BaseResponse.Ret !== 0) {
-          this.log(-1, "sendmessage error: " + jason.BaseResponse.Ret);
-        }
-
-        this.messages.push(JSON.parse(postData).Msg);
-        //TODO: want jason.MsgID (the messages' ID within their database)
-        //or to keep msg.id?
-      } catch(e) {
-        handleError(e);
+  return new Promise(function (resolve, reject) {
+    var params = {
+      "lang": "en_US",
+      "pass_ticket": loginData.pass_ticket
+    };
+    var id = this.getMessageId();
+    var postData = JSON.stringify({
+      "BaseRequest": {
+        "Uin": loginData.wxuin,
+        "Sid": loginData.wxsid,
+        "Skey": loginData.skey,
+        "DeviceID": this.getDeviceID()
+      },
+      "Msg": {
+        "Type": msg.type,
+        "Content": msg.content,
+        "FromUserName": this.thisUser.UserName,
+        "ToUserName": msg.recipient,
+        "LocalID": id,
+        "ClientMsgId": id
       }
-    }.bind(this));
-  }.bind(this)).on("error", this.handleError);
-  request.end(postData);
+    });
+    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxsendmsg", params, postData.length);
+    var request = https.request(url, function(response) {
+      var result = "";
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      response.on("error", this.handleError);
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          var jason = JSON.parse(result);
+          //this.log(4, "sendmessage response: " + result);  // Verbose
+          var ts = this.formTimeStamp(parseInt(id.slice(0, -4)));
+          this.log(0, ts + "Message sent");
+          if (jason.BaseResponse.Ret !== 0) {
+            this.log(-1, "sendmessage error: " + jason.BaseResponse.Ret);
+          }
+
+          this.messages.push(JSON.parse(postData).Msg);
+          resolve();
+          //TODO: want jason.MsgID (the messages' ID within their database)
+          //or to keep msg.id?
+        } catch(e) {
+          this.handleError(e);
+          reject();
+        }
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError);
+    request.end(postData);
+  }.bind(this), this.handleError);
 }
 
 // Called when receiving a message. Also once at login.
@@ -378,7 +381,7 @@ weChatClient.prototype.webwxgeticon = function() {
         result += chunk;
       });
       response.on("end", function() {
-        this.log(4, "result = " + result);
+        //this.log(4, "result = " + result);
         this.events.onIcon(result);  // icon image
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
