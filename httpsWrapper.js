@@ -12,6 +12,7 @@ https.prototype.get = function(url, callback) {
 
 https.prototype.request = function(url, callback) {
   var xhr = freedom["core.xhr"]();  // TODO: never closed, memory leak here.
+  //Promise.resolve(xhr.setWithCredentials(true));
   var isBinary = (url.encoding ? true : false);
 
   xhr.open(url.method, "https://" + url.hostname + url.path, true);
@@ -34,6 +35,7 @@ https.prototype.request = function(url, callback) {
     var response = {};
     xhr.getAllResponseHeaders().then(function(headers) {
       response.headers = headers;
+      //console.log(headers);
     }, console.error);
     response.setEncoding = function(encoding) {
       //Don't think I need to do anything here
@@ -42,10 +44,6 @@ https.prototype.request = function(url, callback) {
       response.on = function(eventName, onCallback) {
         if (eventName === "data") {
           if (isBinary) {
-            // TODO: see if there is a better way to make the "data" event promise-able, so we 
-            // don't make the "end" event get called when not all of the data has been processed.
-            // Right now, I'm just running through this code twice for "data" and "end". 
-            // If it's the end though, I don't pass anything back.
             var bytes = new Uint8Array(responseData.string.length);
             var magicNum = "";
             var dataString = "";
@@ -53,10 +51,12 @@ https.prototype.request = function(url, callback) {
             for (var i = 0; i < responseData.string.length; i++) { 
               bytes[i] = responseData.string.charCodeAt(i);
               dataString += String.fromCharCode(bytes[i]);
-              if (i < 4) {
-                magicNum += bytes[i] + (i < 3 ? "-" : "");
-              }
             }
+            var sub = bytes.subarray(0, 4);
+            for (var b = 0; b < 3; b++) {  // each element except for last.
+              magicNum += sub[b] + "-";
+            }
+            magicNum += sub[3]; // last element
             // Yes, I'm reading the file headers here since I had to strip off the mimeType
             // earlier so it wasn't passed to me encoded >_> 
             if (magicNum === "255-216-255-224") {  // yoya
@@ -67,12 +67,9 @@ https.prototype.request = function(url, callback) {
               mimeType = "image/webp";
               console.log("Unsupported image type: " + magicNum);
             }
-            var blob = new Blob([bytes], {type: mimeType}); 
-            var blobURL = URL.createObjectURL(blob); // just to see breakage.
             var dataURL = "data:" + mimeType + ";base64," + btoa(dataString);
             var imageResult = {
               "iconURLPath": url.path,
-              "blobURL": blobURL,
               "dataURL": dataURL
             };
             onCallback(JSON.stringify(imageResult));

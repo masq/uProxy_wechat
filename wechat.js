@@ -16,29 +16,57 @@ var chalk = require("chalk");
 
 /********** Globals **********/
 
-var weChatClient = function() {
-  this.debug = true;
+var weChatClient = function(wrapHttps, debug) {
+  this.debug = debug;
+  if (!wrapHttps) { 
+    https = require("https");
+  }
+  this.DOMAINS = {
+    "true": {
+      "web": "wx.qq.com",
+      "log": "login.weixin.qq.com",
+      "sync": "webpush.weixin.qq.com"
+    },
+    "false": {
+      "web": "web2.wechat.com",
+      "log": "login.wechat.com",
+      "sync": "webpush2.wechat.com"
+    }
+  };
+  this.isQQuser = false;  // Default to using the wechat domains
+  //this.logdom  = "login.wechat.com";  // "login.weixin.qq.com" for zh_CN/qq users.
+  //this.webdom  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
+  //this.syncdom = "webpush2.wechat.com"; // "webpush.weixin.qq.com" for zh_CN/qq users.
+  this.logdom = this.DOMAINS[this.isQQuser].log;
+  this.webdom = this.DOMAINS[this.isQQuser].web;
+  this.syncdom = this.DOMAINS[this.isQQuser].sync;
 
-  this.LOGDOM  = "login.wechat.com";  // "login.weixin.qq.com" for zh_CN/qq users.
-  this.WEBDOM  = "web2.wechat.com";  // "wx.qq.com" for zh_CN/qq users.
   this.WEBPATH = "/cgi-bin/mmwebwx-bin/";
-  this.SYNCDOM = "webpush2.wechat.com";
   this.USERAGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36";
   this.HIDDENMSGTYPE = 51;  // As of July 23, 2015.
 
   this.events = {};
+  this.events.onWrongDom = function() { return; };
   this.events.onMessage = function(message) { return; };
   this.events.onQRCode = function(qrCode) { return; };
   this.events.onIcon = function(iconURLPath) { return; };
   this.events.onUUID = function(url) { return; };
+  this.events.onLogout = function() { return; };
   
-  this.QRserver = null;  // QRserver... serves QR code at localhost:8000 (for now)
-  this.cookies = [];  // cookies to be sent in requests.
+  this.gotQR = false;
+  this.loginData = {
+    "skey": "",
+    "wxsid": "",
+    "wxuin": "",
+    "pass_ticket": ""
+  };
+  this.cookies = {};  // cookies to be sent in requests.
   this.syncKeys = null;  // Object with List of key/value objects, and Count=List.Length
-  this.contacts = [];  // List of user objects.
+  this.contacts = {};  // Object of <user>.UserName to their corresponding user object
   this.thisUser = null;  // User object.
   this.slctdUser = null;  // User we're currently watching messages from
   this.messages = [];  // List of message objects.
+  //consider making messages a JSON object with UserName as key
 };
 
 module.exports.weChatClient = weChatClient;
@@ -46,7 +74,7 @@ module.exports.weChatClient = weChatClient;
 /*********************************** FUNCTIONS *********************************/
 
 // Checks to see if there is new data relevant to the current user
-weChatClient.prototype.synccheck = function(loginData) {
+weChatClient.prototype.synccheck = function() {
   this.log(2, "Looping to check for updates");
   var retcode = 0;
   return this.promiseWhile(function() {
@@ -58,15 +86,15 @@ weChatClient.prototype.synccheck = function(loginData) {
     return new Promise(function (resolve, reject) {
       var syncParams = {  // #encodeeverythingthatwalks
         "r": Date.now(),
-        "skey": encodeURIComponent(loginData.skey),
-        "sid": encodeURIComponent(loginData.wxsid),
-        "uin": encodeURIComponent(loginData.wxuin),
+        "skey": encodeURIComponent(this.loginData.skey),
+        "sid": encodeURIComponent(this.loginData.wxsid),
+        "uin": encodeURIComponent(this.loginData.wxuin),
         "deviceid": this.getDeviceID(),
         "synckey": encodeURIComponent(this.formSyncKeys()),
         "lang": "en_US",
-        "pass_ticket": encodeURIComponent(loginData.pass_ticket)
+        "pass_ticket": encodeURIComponent(this.loginData.pass_ticket)
       };
-      var url = this.makeURL(this.SYNCDOM, this.WEBPATH + "synccheck", syncParams);
+      var url = this.makeURL(this.syncdom, this.WEBPATH + "synccheck", syncParams);
       https.get(url, function(response) {
         var result = "";
         if (response.headers["set-cookie"]) {
@@ -89,24 +117,13 @@ weChatClient.prototype.synccheck = function(loginData) {
               this.log(-1, "Syncchecked with type " + type + ". No new info..");
               resolve();
             } else {
-              // sendmessage just happens,
-              // webwxsync gets data based on Selector passed by synccheck.
-              // possibly need to call StatusNotify on certain Selectors
-              // to recieve messages... TBD
               // type 1 is profile sync.
               // type 2 is sync. FIXME  // typically associated with sendmessage
               // think type 2 is new synckey
               // type 4 is ModContact sync.  // typically associated with sendmessage
               // type 7 is AddMsg sync.
-              //  MMWEBWX_OK = 0 ,
-              //  MMWEBWX_ERR_SYS = -1 ,
-              //  MMWEBWX_ERR_LOGIC = -2 ,
-              //  MMWEBWX_ERR_SESSION_NOEXIST = 1100,
-              //  MMWEBWX_ERR_SESSION_INVALID = 1101,
-              //  MMWEBWX_ERR_PARSER_REQUEST = 1200,
-              //  MMWEBWX_ERR_FREQ = 1205 // 频率拦截
 
-              resolve(this.webwxsync(loginData, type));
+              resolve(this.webwxsync(type));
             }
           } catch(e) {
             handleError(e);
@@ -115,6 +132,13 @@ weChatClient.prototype.synccheck = function(loginData) {
       }.bind(this)).on("error", this.handleError);
     }.bind(this));
   }.bind(this), function() {  // also is getting passed the retcode in case of code revision, ignored here.
+    //  MMWEBWX_OK = 0 ,
+    //  MMWEBWX_ERR_SYS = -1 ,
+    //  MMWEBWX_ERR_LOGIC = -2 ,
+    //  MMWEBWX_ERR_SESSION_NOEXIST = 1100,
+    //  MMWEBWX_ERR_SESSION_INVALID = 1101,
+    //  MMWEBWX_ERR_PARSER_REQUEST = 1200,
+    //  MMWEBWX_ERR_FREQ = 1205 // trying to sync too frequently.
     if (retcode === 1100) {
       this.log(-1, "Attempted to synccheck a nonexistant session");
     } else {
@@ -136,25 +160,25 @@ weChatClient.prototype.synccheck = function(loginData) {
 //    syncKey has a count field which is the amount of keys, and then the list
 //    of keys, each an object as Key: N, and Value.
 // responds with JSON, most notably the syncKeys.
-weChatClient.prototype.webwxsync = function (loginData, type) {
+weChatClient.prototype.webwxsync = function (type) {
   return new Promise(function (resolve, reject) {
     var postData = JSON.stringify({
       "BaseRequest": {
-        "Uin": loginData.wxuin,
-        "Sid": loginData.wxsid,
-        "Skey": loginData.skey,
+        "Uin": this.loginData.wxuin,
+        "Sid": this.loginData.wxsid,
+        "Skey": this.loginData.skey,
         "DeviceID": this.getDeviceID()
       },
       "SyncKey": this.syncKeys,
       "rr": ~Date.now()
     });
     var params = {
-      "sid": loginData.wxsid,
-      "skey": loginData.skey,
+      "sid": this.loginData.wxsid,
+      "skey": this.loginData.skey,
       "lang": "en_US",
-      "pass_ticket": loginData.pass_ticket
+      "pass_ticket": this.loginData.pass_ticket
     };
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxsync", params, postData.length);
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxsync", params, postData.length);
     //this.log(2, "posting: " + postData);  // Verbose
     //this.log(2, "requesting: " + JSON.stringify(url));  // Verbose
     var request = https.request(url, function(response) {
@@ -190,16 +214,10 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
               this.messages.push(currMsg);
               if (!currMsg.StatusNotifyCode) {
                 // For only handling x type messages here ( && currMsg.MsgType === x)
-                var from = currMsg.FromUserName;
-                var sender = "<unknown>";
-                for (var j = 0; j < this.contacts.length; j++) {
-                  if (from === this.contacts[j].UserName) {
-                    sender = this.contacts[j].NickName;
-
-                    j = this.contacts.length;  // ends loop early when match found.
-                  }
+                var sender = this.contacts[currMsg.FromUserName];
+                if (currMsg.MsgType !== this.HIDDENMSGTYPE) {
+                  this.webwxStatusNotify(1, from);
                 }
-                this.webwxStatusNotify(loginData, 1, from);
                 this.events.onMessage(currMsg);
                 var ts = this.formTimeStamp(currMsg.CreateTime * 1000);
                 if (!this.slctdUser || from !== this.slctdUser) {
@@ -226,18 +244,18 @@ weChatClient.prototype.webwxsync = function (loginData, type) {
 //
 // msg is an object with an integer type (1 for plaintext, 51 for hidden), a string content, and
 // a recipient taken from the contacts list (or any other wechat UserName).
-weChatClient.prototype.webwxsendmsg = function (loginData, msg) {
+weChatClient.prototype.webwxsendmsg = function (msg) {
   return new Promise(function (resolve, reject) {
     var params = {
       "lang": "en_US",
-      "pass_ticket": loginData.pass_ticket
+      "pass_ticket": this.loginData.pass_ticket
     };
     var id = this.getMessageId();
     var postData = JSON.stringify({
       "BaseRequest": {
-        "Uin": loginData.wxuin,
-        "Sid": loginData.wxsid,
-        "Skey": loginData.skey,
+        "Uin": this.loginData.wxuin,
+        "Sid": this.loginData.wxsid,
+        "Skey": this.loginData.skey,
         "DeviceID": this.getDeviceID()
       },
       "Msg": {
@@ -249,7 +267,7 @@ weChatClient.prototype.webwxsendmsg = function (loginData, msg) {
         "ClientMsgId": id
       }
     });
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxsendmsg", params, postData.length);
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxsendmsg", params, postData.length);
     var request = https.request(url, function(response) {
       var result = "";
       if (response.headers["set-cookie"]) {
@@ -284,7 +302,7 @@ weChatClient.prototype.webwxsendmsg = function (loginData, msg) {
 }
 
 // Called when receiving a message. Also once at login.
-weChatClient.prototype.webwxStatusNotify = function(loginData, statCode, sender) {
+weChatClient.prototype.webwxStatusNotify = function(statCode, sender) {
   // StatusNotify is a post request.
   if (statCode === 3) {
     this.log(2, "Notifying others of login");
@@ -296,9 +314,9 @@ weChatClient.prototype.webwxStatusNotify = function(loginData, statCode, sender)
     var from = (!sender ? this.thisUser.UserName : sender);
     var postData = JSON.stringify({
       "BaseRequest": {
-        "Uin": loginData.wxuin,
-        "Sid": loginData.wxsid,
-        "Skey": loginData.skey,
+        "Uin": this.loginData.wxuin,
+        "Sid": this.loginData.wxsid,
+        "Skey": this.loginData.skey,
         "DeviceID": this.getDeviceID()
       },
       "Code": statCode,  // 3 for init, 1 for typical messages
@@ -306,7 +324,7 @@ weChatClient.prototype.webwxStatusNotify = function(loginData, statCode, sender)
       "ToUserName": from,
       "ClientMsgId": Date.now()
     });
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxstatusnotify", params, postData.length);
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxstatusnotify", params, postData.length);
     var request = https.request(url, function(response) {
       var data = "";
       if (response.headers["set-cookie"]) {
@@ -332,15 +350,15 @@ weChatClient.prototype.webwxStatusNotify = function(loginData, statCode, sender)
 }
 
 // Logs the current user out.
-weChatClient.prototype.webwxlogout = function(loginData) {
+weChatClient.prototype.webwxlogout = function() {
   return new Promise(function (resolve, reject) {
     var params = {
       "redirect": 0,  // They normally do 1 here, but I don't think I want redirect.
       "type": 0,
-      "skey": loginData.skey
+      "skey": this.loginData.skey
     };
-    var postData = "sid=" + loginData.wxsid + "&uin=" + loginData.wxuin;
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxlogout", params, postData.length);
+    var postData = "sid=" + this.loginData.wxsid + "&uin=" + this.loginData.wxuin;
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxlogout", params, postData.length);
     var request = https.request(url, function(response) {
       var result = "";
       response.on("error", this.handleError);
@@ -348,10 +366,8 @@ weChatClient.prototype.webwxlogout = function(loginData) {
         result += chunk;
       });
       response.on("end", function() {
-        //this.log(4, "logout result: " + result);  // Verbose
-        // ^ this literally sends back nothing.
         this.log(0, "Logged out");
-        if (this.QRserver) this.QRserver.close();
+        this.events.onLogout();
         resolve();
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
@@ -363,13 +379,11 @@ weChatClient.prototype.webwxlogout = function(loginData) {
 // also accepts a current and total number of contact icons to get.
 weChatClient.prototype.webwxgeticon = function() {
   this.log(1, "Getting contacts' icons");
-  var completed = [];
-  var max = this.contacts.length;
-  for (var i = 0; i < max; i++) {
-    var iconURLPath = this.contacts[i].HeadImgUrl;
-    var the_earl_of_iconia = this.makeURL(this.WEBDOM, iconURLPath, "");
+  var count = 1;
+  for (var user in this.contacts) {
+    var iconURLPath = this.contacts[user].HeadImgUrl;
+    var the_earl_of_iconia = this.makeURL(this.webdom, iconURLPath, "");
     the_earl_of_iconia["encoding"] = "binary";  // FIXME
-    completed.push(false);
     https.get(the_earl_of_iconia, function(response) {
       if (response.headers["set-cookie"]) {
         this.updateCookies(response.headers["set-cookie"]);
@@ -381,24 +395,25 @@ weChatClient.prototype.webwxgeticon = function() {
         result += chunk;
       });
       response.on("end", function() {
-        //this.log(4, "result = " + result);
-        this.events.onIcon(result);  // icon image
+        this.log(0, "Got icon " + count + " of " + Object.keys(this.contacts).length);
+        count++;
+        this.events.onIcon(result); 
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
   }
 }
 
 // Gets contact list.
-weChatClient.prototype.webwxgetcontact = function (loginData, noGetIcon) {
+weChatClient.prototype.webwxgetcontact = function (noGetIcon) {
   this.log(1, "Getting ContactList");
   return new Promise(function (resolve, reject) {
     var clParams = {
       "lang": "en_US",
-      "pass_ticket": loginData.pass_ticket,
+      "pass_ticket": this.loginData.pass_ticket,
       "r": Date.now(),
-      "skey": loginData.skey
+      "skey": this.loginData.skey
     };
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxgetcontact", clParams);
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxgetcontact", clParams);
     //this.log(4, JSON.stringify(the_earl_of_contax));  // Verbose
     https.get(url, function(response) {
       var result = "";
@@ -418,12 +433,13 @@ weChatClient.prototype.webwxgetcontact = function (loginData, noGetIcon) {
           }
           for (var i = 0; i < jason.MemberList.length; i++) {
             if (jason.MemberList[i].UserName.startsWith("@")) {
-              this.contacts.push(jason.MemberList[i]);
+              this.contacts[jason.MemberList[i].UserName] = jason.MemberList[i];
+              //TODO: consider a Uin to UserName dictionary as well.
             }
           }
           this.log(0, "Got ContactList");
           if (!noGetIcon) this.webwxgeticon();
-          resolve(loginData);
+          resolve();
         } catch (e) {
           this.handleError(e);
         }
@@ -436,14 +452,18 @@ weChatClient.prototype.webwxgetcontact = function (loginData, noGetIcon) {
 //
 // returns a promise, resolved with an object containing skey, sid, uin, pass_ticket.
 // sets cookies in the form of one long string separated by "; ", in key=value format.
-weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
-  redirectURL += "&fun=new&version=v2";
-  var url = this.makeURL(this.WEBDOM, redirectURL.substring(redirectURL.indexOf(this.WEBPATH)), "");
+weChatClient.prototype.webwxnewloginpage = function (redirectURL, changedDOM) {
+  if (!changedDOM)
+    redirectURL += "&fun=new&version=v2";
+  else 
+    this.log(1, "redirect: " + redirectURL, -1);
+  var url = this.makeURL(this.webdom, redirectURL.substring(redirectURL.indexOf(this.WEBPATH)), "");
   this.log(1, "Getting login data");
   return new Promise(function (resolve, reject) {
     https.get(url, function(response) {
       var xml = "";
       if (response.headers["set-cookie"]) {
+        this.log(1, "I SEE COOKIES!!!", -1);
         this.updateCookies(response.headers["set-cookie"]);
       }
       response.on("error", this.handleError);
@@ -451,24 +471,34 @@ weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
         xml += chunk;
       });
       response.on("end", function() {
-        var loginData = {
-          "skey": "",
-          "wxsid": "",
-          "wxuin": "",
-          "pass_ticket": ""
-        };
-        for (var key in loginData) {
-          var openTag  = "<" + key + ">";
-          var closeTag = "</" + key + ">";
-          var begin = xml.indexOf(openTag) + openTag.length;
-          var end   = xml.indexOf(closeTag);
-          var value = xml.substring(begin, end);
-          loginData[key] = value;
-          this.log(4, "Got xml data: " + key + " = " + value);  // Verbose
+        if (changedDOM) {
+          return this.events.onWrongDom();
+        } else {
+          if (~xml.indexOf("<redirecturl>")) {
+            var start    = xml.indexOf("<redirecturl>") + "<redirecturl>".length;
+            var finish   = xml.indexOf("</redirecturl>");
+            var referral = xml.substring(start, finish);
+            if (/https:\/\/.*\.qq\.com/.test(referral)) {
+              this.isQQuser = true;
+            } else {
+              this.isQQuser = false;
+            }
+            this.webwxnewloginpage(referral, true);
+          } else {
+            for (var key in this.loginData) {
+              var openTag  = "<" + key + ">";
+              var closeTag = "</" + key + ">";
+              var begin = xml.indexOf(openTag) + openTag.length;
+              var end   = xml.indexOf(closeTag);
+              var value = xml.substring(begin, end);
+              this.loginData[key] = value;
+              this.log(4, "Got xml data: " + key + " = " + value);  // Verbose
+            }
+            this.log(4, "Cookies: " + this.formCookies());  // Verbose
+            this.log(0, "Got login data");
+            resolve();
+          }
         }
-        this.log(4, "Cookies: " + this.formCookies());  // Verbose
-        this.log(0, "Got login data");
-        resolve(loginData);
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
   }.bind(this));
@@ -477,24 +507,24 @@ weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
 // Gets the initial data for the current user.
 //
 // returns a Promise
-weChatClient.prototype.webwxinit = function (loginData) {
+weChatClient.prototype.webwxinit = function () {
   // init is a post request.
   this.log(1, "Logging in");
   return new Promise(function (resolve, reject) {
     var params = {
       "r": ~Date.now(),
       "lang": "en_US",
-      "pass_ticket": loginData.pass_ticket
+      "pass_ticket": this.loginData.pass_ticket
     };
     var postData = JSON.stringify({
       "BaseRequest": {
-        "Uin": loginData.wxuin,
-        "Sid": loginData.wxsid,
-        "Skey": loginData.skey,
+        "Uin": this.loginData.wxuin,
+        "Sid": this.loginData.wxsid,
+        "Skey": this.loginData.skey,
         "DeviceID": this.getDeviceID()
       }
     });
-    var url = this.makeURL(this.WEBDOM, this.WEBPATH + "webwxinit", params, postData.length);
+    var url = this.makeURL(this.webdom, this.WEBPATH + "webwxinit", params, postData.length);
     var request = https.request(url, function(response) {
       var data = "";
       if (response.headers["set-cookie"]) {
@@ -517,8 +547,8 @@ weChatClient.prototype.webwxinit = function (loginData) {
           this.thisUser = jason.User;
           this.syncKeys = jason.SyncKey;
           this.log(0, "\"" + this.thisUser.NickName + "\" is now logged in");
-          this.webwxStatusNotify(loginData, 3);
-          resolve(loginData);
+          this.webwxStatusNotify(3);
+          resolve();
         } catch (e) {
           handleError(e);
         }
@@ -532,11 +562,11 @@ weChatClient.prototype.webwxinit = function (loginData) {
 weChatClient.prototype.getUUID = function() {
   var uuidURLParameters = {
     "appid": "wx782c26e4c19acffb",
-    "redirect_uri": encodeURIComponent("https://" + this.WEBDOM + this.WEBPATH + "webwxnewloginpage"),
+    "redirect_uri": encodeURIComponent("https://" + this.webdom + this.WEBPATH + "webwxnewloginpage"),
     "fun": "new",
     "lang": "en_US"
   };
-  var url = this.makeURL(this.LOGDOM, "/jslogin", uuidURLParameters);
+  var url = this.makeURL(this.logdom, "/jslogin", uuidURLParameters);
   this.log(1, "Getting UUID");
   return new Promise(function(resolve, reject) {
     https.get(url, function(response) {
@@ -548,7 +578,7 @@ weChatClient.prototype.getUUID = function() {
       response.on("end", function() {
         var uuid = data.split(";")[1].split(" = ")[1].trim().slice(1,-1);
         this.log(0, "Got UUID " + uuid);
-        this.events.onUUID("https://" + this.LOGDOM + "/qrcode/" + uuid);
+        this.events.onUUID("https://" + this.logdom + "/qrcode/" + uuid);
         resolve(uuid);
       }.bind(this));
     }.bind(this)).on("error", this.handleError);
@@ -558,7 +588,7 @@ weChatClient.prototype.getUUID = function() {
 // Gets the QR code corresponding to the given uuid.
 // takes the url of where to get the QR code from as a parameter.
 weChatClient.prototype.getQR = function(uuid) {
-  var url = this.makeURL(this.LOGDOM, "/qrcode/" + uuid, { "t": "webwx" });
+  var url = this.makeURL(this.logdom, "/qrcode/" + uuid, { "t": "webwx" });
   this.log(1, "Getting QR code");
   return new Promise(function(resolve, reject) {
     https.get(url, function(response) {
@@ -580,7 +610,8 @@ weChatClient.prototype.getQR = function(uuid) {
 // and then creates a server displaying it.
 weChatClient.prototype.serveQR = function(uuid) {
   this.getQR(uuid).then(function(imgQR) {
-    this.handlers["onQRCode"](imgQR, uuid);
+    this.gotQR = true;
+    this.events.onQRCode(imgQR);
   }.bind(this), this.handleError);
 }
 
@@ -591,8 +622,8 @@ weChatClient.prototype.serveQR = function(uuid) {
 // up when this QR expires, which means we need to start this whole process over.
 //
 // returns promise.
-weChatClient.prototype.checkForScan = function(uuid, noGetQR) {
-  if (!noGetQR) this.serveQR(uuid);
+weChatClient.prototype.checkForScan = function(uuid, getQR) {
+  if (getQR || this.gotQR) this.serveQR(uuid);
   var result = { "code": 999 };  //initialize to nonexistant http code.
   var tip;
   this.log(2, "Checking for response codes indicating QR code scans");
@@ -618,7 +649,7 @@ weChatClient.prototype.checkForScan = function(uuid, noGetQR) {
         "r": ~Date.now(),
         "lang": "en_US"
       };
-      var the_Czech_earl = this.makeURL(this.LOGDOM, this.WEBPATH + "login", params);
+      var the_Czech_earl = this.makeURL(this.logdom, this.WEBPATH + "login", params);
       //this.log(3, the_Czech_earl);
       https.get(the_Czech_earl, function(response) {
         var data = "";
@@ -629,7 +660,7 @@ weChatClient.prototype.checkForScan = function(uuid, noGetQR) {
         response.on("end", function() {
           //this.log(3, data);
           var values = data.split(";");
-          result.code = parseInt(values[0].split("=")[1]);
+          result.code = parseInt(values[0].split("=")[1], 10);
           var sign;
           var respCode = "Got response code " + result.code + ": ";
           var meaning  = "";
@@ -678,71 +709,66 @@ weChatClient.prototype.getDeviceID = function() {
   return "e" + ("" + Math.random().toFixed(15)).substring(2, 17);
 }
 
-// Error handling function, accepts a message to display.
-weChatClient.prototype.handleError = function(air) {
-  console.error(chalk.bgRed("[-] ERROR OCCURRED:", air));
-  console.error(air.stack);
-  throw Error(air);
-}
-
 // Takes domain, path, and then an object with all query parameters in it, and
 // returns a fully formed URL. for GET requests only though.
 weChatClient.prototype.makeURL = function(domain, path, params, postDataLen) {
   path += "?";
-  for (var key in params) {
+  for (var key in params)
     path += key + "=" + params[key] + "&";
-  }
   path = path.slice(0, -1); // removes trailing & or ?
-
   var result = {
     "hostname": domain,
     "port": 443,  //443 for https, 80 for http
     "path": path,
     "method": (postDataLen ? "POST" : "GET")
   }; 
-
   if (this.cookies) {
     result["headers"] = {
       "User-Agent": this.USERAGENT,
       "Connection": "keep-alive",
       "Cookie": this.formCookies()
-    }
+    };
     if (postDataLen) {
       result.headers["Content-Length"] = postDataLen;
       result.headers["Content-Type"] = "application/json;charset=UTF-8";
     }
   };
-
   return result;
+}
+
+// Error handling function, accepts a message to display.
+weChatClient.prototype.handleError = function(air) {
+  if (!air instanceof Error)
+    air = Error(air);
+  this.log(-2, air);
+  this.log(-1, air.stack);
+  throw air;
 }
 
 // Helper function to clean up outputting info to screen
 weChatClient.prototype.log = function(sign, message, output) {
   var result;
+  var pColorize = [
+    function(text) { return chalk.cyan(text); }, // "thread" 1
+    function(text) { return chalk.yellow(text); }, // "thread" 2
+    function(text) { return chalk.magenta(text); }, // program output (e.g. QRserver messages)
+    function(text) { return text; }, // Verbose output, and messages from thisUser
+    function(text) { return chalk.inverse(text); } // messages to thisUser
+  ];
+  var nColorize = [
+    function(text) { return chalk.red(text); }, // warning
+    function(text) { return chalk.bgRed(text); } // error
+  ];
   if (sign === 0) {
     result = chalk.green("[+] " + message + "!");
   } else if (sign > 0) {
-    var suffix = "...";
-    if (output && output === -1) {
-      // if output param is passed and output is -1
-      suffix = "";
-    }
-    var temp = "[*] " + message + suffix;
-    if (sign === 1) {  // Thread 1
-      result = chalk.cyan(temp);
-    } else if (sign === 2) {  // Thread 2
-      result = chalk.yellow(temp);
-    } else if (sign === 3) {  // Local program information 3
-      result = chalk.magenta(temp);
-    } else if (sign === 4) {  // 4
-      result = temp;  // just plain white text... use for Verbose
-    } else if (sign === 5) {
-      result = chalk.inverse(temp);  // received messages
-    }
-  } else { // sign === -1
-    result = chalk.red("[-] " + message + ".");
+    result = pColorize[sign - 1]("[*] " + message + (output === -1 ? "" : "..."));
+  } else { // sign < 0
+    result = nColorize[-sign - 1]("[-] " + message + ".");
   }
-  console.log(result + (output && output !== -1 ? " " + output : ""));
+  var complete = result + (output && output !== -1 ? " " + output : "");
+  if (sign < 0) console.error(complete);
+  else console.log(complete);
 }
 
 // Helper method... provide a condition function and a main function. This will
@@ -764,19 +790,16 @@ weChatClient.prototype.promiseWhile = function(condition, body, onReject) {
 // Returns a formatted version of the SyncKeys so they can be sent in requests
 weChatClient.prototype.formSyncKeys = function() {
   var result = "";
-  var list = this.syncKeys.List;
-  for (var i = 0; i < list.length; i++) {
-    result += list[i].Key + "_" + list[i].Val + "|";
-  }
+  for (var i = 0; i < this.syncKeys.List.length; i++)
+    result += this.syncKeys.List[i].Key + "_" + this.syncKeys.List[i].Val + "|";
   return result.slice(0, -1);  // removes trailing "|"
 }
 
 // Returns a formatted version of the cookies so they can be sent in requests.
 weChatClient.prototype.formCookies = function() {
   var result = "";
-  for (var i = 0; i < this.cookies.length; i++) {
-    result += this.cookies[i].Key + "=" + this.cookies[i].Val + "; ";
-  }
+  for (var key in this.cookies) 
+    result += key + "=" + this.cookies[key] + "; ";
   return result.slice(0, -2)  // removes trailing "; "
 }
 
@@ -792,18 +815,7 @@ weChatClient.prototype.updateCookies = function(setCookies) {
     var key = cookie.substr(0, cookie.indexOf("="));
     var value = cookie.substr(cookie.indexOf("=") + 1);
 
-    // If there's an existing cookie with the same key, updates.
-    // otherwise, it will put that cookie into the cookies list.
-    var updated = false;
-    for (var j = 0; j < this.cookies.length && !updated; j++) {
-      if (key === this.cookies[j].Key && value !== this.cookies[j].Val) {
-        this.cookies[j].Val = value;
-        updated = true;
-      }
-    }
-    if (!updated) {
-      this.cookies.push({ "Key": key, "Val": value });
-    }
+    this.cookies[key] = value;
   }
 }
 
