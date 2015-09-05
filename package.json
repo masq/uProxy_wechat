@@ -1,6 +1,6 @@
 {
   "name": "wechat-webclient",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "wechat webclient as a node.js module",
   "main": "wechat.js",
   "scripts": {
@@ -19,7 +19,7 @@
     "url": "https://github.com/LeMasque/uProxy_wechat/issues"
   },
   "homepage": "https://github.com/LeMasque/uProxy_wechat#readme",
-  "devDependencies": {
+  "dependencies": {
     "chalk": "^1.1.0"
   }
 }
