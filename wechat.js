@@ -53,6 +53,10 @@ var weChatClient = function(wrapHttps, debug) {
   this.events.onIcon = function(iconURLPath) { return; };
   this.events.onUUID = function(url) { return; };
   this.events.onLogout = function() { return; };
+  this.events.onModChatroom = function(modChatroom) { return; };
+  this.events.onModContact = function(modContact) { return; };
+  this.events.onInitialized = function() { return; };
+  this.events.onWXIDs = function(wxids) { return; };
   
   this.loginData = {
     "skey": "",
@@ -63,6 +67,7 @@ var weChatClient = function(wrapHttps, debug) {
   this.cookies = {};  // Cookies to be sent in requests.
   this.syncKeys = null;  // Object with List of key/value objects, and Count=List.Length
   this.contacts = {};  // Object of <user>.UserName to their corresponding user object
+  this.chatrooms = {}; // Object of <user>.UserName to their corresponding chatroom object.
   this.thisUser = null;  // User object for the user that is logged in using this client.
   this.messages = {};  // Object of <user>.UserName matched to a List of relevant message objects.
 };
@@ -70,6 +75,234 @@ var weChatClient = function(wrapHttps, debug) {
 module.exports.weChatClient = weChatClient;
 
 /*********************************** FUNCTIONS *********************************/
+
+/*
+ *  combination of preLogin and postLoginInit
+ */
+weChatClient.prototype.login = function(shouldDownloadQR, shouldDownloadIcons) {
+  return new Promise(function (resolve, reject) {
+    this.prelogin(shouldDownloadQR)
+    .then(this.postLoginInit.bind(this, shouldDownloadIcons), this.handleError)
+    .then(resolve, reject);
+  }.bind(this));
+};
+
+/*
+ *  Technically logged in, but sets up some environment (necessary)
+ */
+weChatClient.prototype.postLoginInit = function(shouldDownloadIcons) {
+  return new Promise(function (resolve, reject) {
+    this.webwxinit()
+    .then(this.webwxgetcontact.bind(this, shouldDownloadIcons), this.handleError)
+    .then(resolve, reject);
+  }.bind(this));
+};
+
+/*
+ *  Haven't logged in yet, steps to login
+ */
+weChatClient.prototype.preLogin = function(shouldDownloadQR) {
+  return new Promise(function (resolve, reject) {
+    this.getUUID()
+    .then(this.checkForScan.bind(this, shouldDownloadQR), this.handleError)
+    .then(this.webwxnewloginpage.bind(this, shouldDownloadQR), this.handleError)
+    .then(resolve, reject);
+  }.bind(this));
+};
+
+weChatClient.prototype.webwxsearchcontact = function(keyword) {
+  return new Promise(function (resolve, reject) {
+    var params = {
+      "lang": "en_US",
+      "pass_ticket": this.loginData.pass_ticket
+    };
+    var postData = {
+      "BaseRequest": this.formBaseRequest(),
+      "KeyWord": keyword
+    };
+    postData = JSON.stringify(postData);
+    var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxsearchcontact", params, postData.length);
+    var request = https.request(url, function(response) {
+      var result = "";
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      response.on("error", this.handleError.bind(this));
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          this.log(0, "searchcontact results: " + result);
+          var jason = JSON.parse(result);
+          if (jason.BaseResponse.Ret !== 0) {
+            this.log(-1, "searchcontact error: " + jason.BaseResponse.Ret);
+          }
+          resolve();
+        } catch(e) {
+          this.handleError(e).bind(this);
+          reject();
+        }
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError.bind(this));
+    request.end(postData);
+  }.bind(this));
+};
+
+// Provide List (i.e. []) with each index being a <user>.UserName for the members
+// of the chat group you'd like to create. possibly also a string of topic/group name.
+weChatClient.prototype.webwxcreatechatroom = function(memberlist)  {
+  return new Promise(function (resolve, reject) {
+    this.log(1, "creating chatroom");
+    for (var i = 0; i < memberlist.length; i++) {
+      memberlist[i] = {"UserName": memberlist[i]};
+    }
+    var params = {
+      "r": Date.now(),
+      "lang": "en_US",
+      "pass_ticket": this.loginData.pass_ticket
+    };
+    var postData = {
+      "MemberCount": memberlist.length,
+      "MemberList": memberlist,
+      "Topic": "", // stupid, but I can't change name on creation.
+      "BaseRequest": this.formBaseRequest()
+    };
+    postData = JSON.stringify(postData);
+    var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxcreatechatroom", params, postData.length);
+    var request = https.request(url, function(response) {
+      var result = "";
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      response.on("error", this.handleError.bind(this));
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          this.log(0, "webwxcreatechatroom results: " + result);
+          var jason = JSON.parse(result);
+          if (jason.BaseResponse.ErrMsg !== "Everything is OK") {
+            this.log(-1, "webwxcreatechatroom error: " + jason.BaseResponse.ErrMsg);
+            reject(jason.BaseResponse.ErrMsg);
+          } else {
+            resolve(jason.ChatRoomName);
+          }
+        } catch(e) {
+          this.handleError(e).bind(this);
+          reject();
+        }
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError.bind(this));
+    request.end(postData);
+  }.bind(this));
+};
+
+// resolves with chatroom UserName
+weChatClient.prototype.webwxbatchgetcontact = function(chatroomOrChatrooms, topic) {
+  return new Promise(function (resolve, reject) {
+    this.log(1, "getting chatroom users");
+    var memberlist = [];
+    if (typeof chatroomOrChatrooms === "string") {
+      memberlist[0] = {"UserName": chatroomOrChatrooms, "ChatRoomId": ""};
+    } else {
+      for (var i = 0; i < chatroomOrChatrooms.length; i++) {
+        memberlist[i] = {"UserName": chatroomOrChatrooms[i], "ChatRoomId": ""};
+      }
+    }
+    var params = {
+      "type": "ex",
+      "r": Date.now(),
+      "lang": "en_US",
+      "pass_ticket": this.loginData.pass_ticket
+    };
+    var postData = {
+      "BaseRequest": this.formBaseRequest(),
+      "Count": memberlist.length,
+      "List": memberlist
+    };
+    postData = JSON.stringify(postData);
+    var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxbatchgetcontact", params, postData.length);
+    var request = https.request(url, function(response) {
+      var result = "";
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      response.on("error", this.handleError.bind(this));
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          //this.log(0, "webwxbatchgetcontact results: " + result); // Verbose
+          var jason = JSON.parse(result);
+          if (jason.BaseResponse.Ret !== 0) {
+            this.log(-1, "webwxbatchgetcontact error: " + jason.BaseResponse.Ret);
+          }
+          var chatroomList = jason.ContactList;
+          for (var j = 0; j < jason.Count; j++) {
+            this.chatrooms[chatroomList[j].UserName] = chatroomList[j];
+            // TBD: webwxgetheadimg();
+          }
+          resolve((typeof chatroomOrChatrooms === "string" ? chatroomOrChatrooms : ""));
+        } catch(e) {
+          this.handleError(e).bind(this);
+          reject();
+        }
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError.bind(this));
+    request.end(postData);
+  }.bind(this));
+};
+
+// provide update type either "delmember" or "modtopic",
+// provide either the <user>.UserName of the member you'd like to delete or a string with the
+//  new name of the chatroom you'd like.
+// provide the <user>.UserName of the chatroom you'd like to update.
+// resolves with name of chatroom
+weChatClient.prototype.webwxupdatechatroom = function(updatetype, topicOrDeletion, chatroom) {
+  return new Promise(function (resolve, reject) {
+    this.log(1, "updating chatroom");
+    var postType = (updatetype === "modtopic" ? "NewTopic" : "DelMemberList")
+    var params = { 
+      "fun": updatetype,
+      "lang": "en_US",
+      "pass_ticket": this.loginData.pass_ticket
+    };
+    var postData = {
+      "ChatRoomName": chatroom,
+      "BaseRequest": this.formBaseRequest()
+    };
+    postData[postType] = topicOrDeletion;
+    postData = JSON.stringify(postData);
+    var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxupdatechatroom", params, postData.length);
+    var request = https.request(url, function(response) {
+      var result = "";
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      response.on("error", this.handleError.bind(this));
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          this.log(0, "webwxupdatechatroom results: " + result);
+          var jason = JSON.parse(result);
+          if (jason.BaseResponse.Ret !== 0) {
+            this.log(-1, "webwxupdatechatroom error: " + jason.BaseResponse.Ret);
+          }
+          resolve(chatroom);
+        } catch(e) {
+          this.handleError(e).bind(this);
+          reject();
+        }
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError.bind(this));
+    request.end(postData);
+  }.bind(this));
+};
 
 /*
  *  @description: Invoking this checks wechat servers to determine if there is new
@@ -200,7 +433,6 @@ weChatClient.prototype.webwxsync = function (type) {
           if (jason.BaseResponse.Ret !== 0) {
             this.log(-1, "webwxsync error: " + jason.BaseResponse.Ret);
           }
-          // TODO: check type here and get relevant data.
           // BaseResponse
           // AddMsgCount: n => AddMsgList
           // ModContactCount: n => ModContactList
@@ -211,20 +443,65 @@ weChatClient.prototype.webwxsync = function (type) {
           // SyncKey
           // Skey
           if (jason.AddMsgCount !== 0) {
-            for (var i = 0; i < jason.AddMsgList.length; i++) {
+            for (var i = 0; i < jason.AddMsgCount; i++) {
               var currMsg = jason.AddMsgList[i];
-              var sender = this.contacts[currMsg.FromUserName];
+              var sender = this.contacts[currMsg.FromUserName] || this.chatrooms[currMsg.FromUserName];
               if (typeof this.messages[sender] === "undefined")
                 this.messages[sender] = [];
               this.messages[sender].push(currMsg);
               if (!currMsg.StatusNotifyCode) {
                 // For only handling x type messages here ( && currMsg.MsgType === x)
                 if (currMsg.MsgType !== this.HIDDENMSGTYPE) {
-                  this.webwxStatusNotify(1, from);
+                  this.webwxStatusNotify(1, sender.UserName);
                 }
                 var ts = this.formTimeStamp(currMsg.CreateTime * 1000);
                 this.log(5, ts + sender.NickName + ": " + currMsg.Content, -1);
                 this.events.onMessage(currMsg);
+              } else { 
+                var notifyMsg = currMsg.Content.replace(/&lt;/g, "<");
+                notifyMsg = notifyMsg.replace(/&gt;/g, ">");
+                if (~notifyMsg.indexOf("<unreadchatlist>")) {
+                  var notifyUsers = currMsg.StatusNotifyUserName.split(",");
+                  var unaccountedForChatrooms = [];
+                  var wxids = this.extractXMLData(notifyMsg, "username").split(",");
+                  var weixinIDs = {};
+                  for (var k = 0; k < notifyUsers.length; k++) {
+                    var kthUser = notifyUsers[k];
+                    if (kthUser.startsWith("@@") && 
+                          typeof this.chatrooms[kthUser] === "undefined") {
+                      unaccountedForChatrooms.push(kthUser);
+                      this.chatrooms[kthUser] = {"Uin": 0};
+                    }
+                    if (kthUser.startsWith("@")) {
+                      if (this.contacts[kthUser] && this.contacts[kthUser].Uin === 0) {
+                        this.contacts[kthUser].Uin = null;
+                        weixinIDs[kthUser] = wxids[k];  // TODO: test if i work
+                      } else if (this.chatrooms[kthUser] && this.chatrooms[kthUser].Uin === 0) {
+                        this.chatrooms[kthUser].Uin = null;
+                        weixinIDs[kthUser] = wxids[k];  // TODO: test if i work
+                      }
+                    } 
+                  }
+                  //weixinIDs is <user>.UserName => wxid_xxxxxxxxxxxxxx pairs
+                  if (unaccountedForChatrooms.length > 0) {
+                    this.webwxbatchgetcontact(unaccountedForChatrooms)
+                      .then(this.events.onWXIDs.bind(this, weixinIDs), this.handleError.bind(this));
+                  } else {
+                    this.events.onWXIDs(weixinIDs);
+                  }
+                }
+              }
+            }
+          }
+          if (jason.ModContactCount !== 0) {
+            for (var j = 0; j < jason.ModContactCount; j++) {
+              var modContact = jason.ModContactList[j];
+              if (modContact.UserName.startsWith("@@")) {
+                this.chatrooms[modContact.UserName] = modContact;
+                this.events.onModChatroom(modContact);
+              } else {
+                this.contacts[modContact.UserName] = modContact;
+                this.events.onModContact(modContact);
               }
             }
           }
@@ -297,8 +574,6 @@ weChatClient.prototype.webwxsendmsg = function (msg) {
             this.log(-1, "sendmessage error: " + jason.BaseResponse.Ret);
           }
           resolve();
-          //TODO: want jason.MsgID (the messages' ID within their database)
-          //or to keep msg.id?
         } catch(e) {
           this.handleError(e).bind(this);
           reject();
@@ -309,7 +584,6 @@ weChatClient.prototype.webwxsendmsg = function (msg) {
   }.bind(this), this.handleError.bind(this));
 };
 
-// Called when receiving a message. Also once at login.
 /*
  *  @description: Pushes a notification to user devices. For example, buzzing
  *    someone's phone when they have a new message. This is invoked by other functions
@@ -345,14 +619,72 @@ weChatClient.prototype.webwxStatusNotify = function(statCode, sender) {
         data += chunk;
       });
       response.on("end", function() {
-        var jason = JSON.parse(data);
-        //this.log(2, JSON.stringify(jason));  // verbose
-        if (jason.BaseResponse.ErrMsg) {
-          this.log(-1, jason.BaseResponse.ErrMsg);
+        try {
+          var jason = JSON.parse(data);
+          //this.log(2, JSON.stringify(jason));  // verbose
+          if (jason.BaseResponse.ErrMsg) {
+            this.log(-1, jason.BaseResponse.ErrMsg);
+          }
+          if (statCode === 3) this.log(0, "Other devices notified of login");
+          else if (statCode === 1) this.log(0, "Other devices notified of message");
+          resolve();
+        } catch(e) {
+          this.handleError.bind(this, e);
         }
-        if (statCode === 3) this.log(0, "Other devices notified of login");
-        else if (statCode === 1) this.log(0, "Other devices notified of message");
-        resolve();
+      }.bind(this));
+    }.bind(this)).on("error", this.handleError.bind(this));
+    request.end(postData);
+  }.bind(this));
+};
+
+// Either sticky a contact on the top of your list, or change how their name appears to you.
+// action can be either "modremarkname" or "topcontact"
+// property is only used when the action is "modremarkname". It is the name which you'd like to
+// change your contact to have displayed to you.
+// user is a <user> object.
+weChatClient.prototype.webwxoplog = function(action, property, user) {
+  this.log(1, "oplogging");
+  return new Promise(function (resolve, reject) {
+    var params = {
+      "lang": "en_US",
+      "pass_ticket": this.loginData.pass_ticket
+    };
+    var postData = {
+      "UserName": user.UserName,
+      "BaseRequest": this.formBaseRequest()
+    };
+    var actionId = 2;
+    if (action === "topcontact") {
+      actionId = 3;
+      postData["OP"] = (user.ContactFlag / 2048 ? 0 : 1);
+    } else {
+      postData["RemarkName"] = property;
+    }
+    postData.CmdId = actionId;
+    postData = JSON.stringify(postData);
+    var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxoplog", params, postData.length);
+    var request = https.request(url, function(response) {
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
+      var result = "";
+      response.on("error", this.handleError.bind(this));
+      response.on("data", function(chunk) {
+        result += chunk;
+      });
+      response.on("end", function() {
+        try {
+          var jason = JSON.parse(result);
+          if (jason.BaseResponse.Ret !== 0) {
+            this.log(-1, "Webwxoplog error: " + jason.BaseResponse.ErrMsg);
+            reject(jason.BaseResponse.Ret);
+          } else {
+            this.log(0, "Webwxoplog success");
+            resolve();
+          }
+        } catch (e) {
+          this.handleError.bind(this, e);
+        }
       }.bind(this));
     }.bind(this)).on("error", this.handleError.bind(this));
     request.end(postData);
@@ -373,6 +705,9 @@ weChatClient.prototype.webwxlogout = function() {
     var postData = "sid=" + this.loginData.wxsid + "&uin=" + this.loginData.wxuin;
     var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxlogout", params, postData.length);
     var request = https.request(url, function(response) {
+      if (response.headers["set-cookie"]) {
+        this.updateCookies(response.headers["set-cookie"]);
+      }
       var result = "";
       response.on("error", this.handleError.bind(this));
       response.on("data", function(chunk) {
@@ -397,7 +732,8 @@ weChatClient.prototype.webwxgeticon = function() {
   for (var user in this.contacts) {
     var iconURLPath = this.contacts[user].HeadImgUrl;
     var the_earl_of_iconia = this.makeURL(this.DOMAINS[this.isQQuser].web, iconURLPath, "");
-    the_earl_of_iconia["encoding"] = "binary";  // FIXME
+    // if something in the normal https module doesn't exist, means a wrapper is in use, so...
+    if (!https.createServer) the_earl_of_iconia["encoding"] = "binary";
     https.get(the_earl_of_iconia, function(response) {
       if (response.headers["set-cookie"]) {
         this.updateCookies(response.headers["set-cookie"]);
@@ -418,6 +754,7 @@ weChatClient.prototype.webwxgeticon = function() {
 
 /*
  *  @description: Gets the current user's contacts, populating the contacts object.
+ *  @param {Boolean} — whether or not to have this code download the icons of the ContactList.
  */
 weChatClient.prototype.webwxgetcontact = function (GetIcon) {
   this.log(1, "Getting ContactList");
@@ -429,7 +766,7 @@ weChatClient.prototype.webwxgetcontact = function (GetIcon) {
       "skey": this.loginData.skey
     };
     var url = this.makeURL(this.DOMAINS[this.isQQuser].web, this.WEBPATH + "webwxgetcontact", clParams);
-    //this.log(4, JSON.stringify(the_earl_of_contax));  // Verbose
+    //this.log(4, JSON.stringify(url));  // Verbose
     https.get(url, function(response) {
       var result = "";
       if (response.headers["set-cookie"]) {
@@ -441,8 +778,8 @@ weChatClient.prototype.webwxgetcontact = function (GetIcon) {
       });
       response.on("end", function() {
         try {
+          //this.log(4, "Contacts received: " + result);  // Verbose
           var jason = JSON.parse(result);
-          //this.log(4, "Contacts received: " + JSON.stringify(jason));  // Verbose
           if (jason.BaseResponse.ErrMsg) {
             this.log(-1, jason.BaseResponse.ErrMsg);
           }
@@ -453,7 +790,7 @@ weChatClient.prototype.webwxgetcontact = function (GetIcon) {
             }
           }
           this.log(0, "Got ContactList");
-          if (GetIcon) this.webwxgeticon(); //FIXME
+          if (GetIcon) this.webwxgeticon();
           resolve();
         } catch (e) {
           this.handleError(e).bind(this);
@@ -470,7 +807,7 @@ weChatClient.prototype.webwxgetcontact = function (GetIcon) {
  *    the service.
  *  @param {String} — Takes a url to get the information from.
  */
-weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
+weChatClient.prototype.webwxnewloginpage = function (shouldDownloadQR, redirectURL) {
   if (!~redirectURL.indexOf("&fun="))
     redirectURL += "&fun=new&version=v2";
   else 
@@ -491,7 +828,7 @@ weChatClient.prototype.webwxnewloginpage = function (redirectURL) {
         if (~xml.indexOf("<redirecturl>")) {
           var referral = this.extractXMLData(xml, "redirecturl");
           this.isQQuser = !this.isQQuser;
-          this.events.onWrongDom(referral).then(resolve, reject);
+          this.events.onWrongDom(shouldDownloadQR).then(resolve, reject);
         } else {
           for (var key in this.loginData) {
             this.loginData[key] = this.extractXMLData(xml, key);
@@ -539,6 +876,7 @@ weChatClient.prototype.webwxinit = function () {
           this.syncKeys = jason.SyncKey;
           this.log(0, "\"" + this.thisUser.NickName + "\" is now logged in");
           this.webwxStatusNotify(3);
+          this.events.onInitialized();
           resolve();
         } catch (e) {
           handleError(e);
@@ -620,7 +958,7 @@ weChatClient.prototype.getQR = function(uuid) {
  *    access in order to get login authentication data (e.g. cookies). On failure, will throw
  *    an error.
  */
-weChatClient.prototype.checkForScan = function(uuid, getQR) {
+weChatClient.prototype.checkForScan = function(getQR, uuid) {
   if (getQR)
     this.getQR(uuid);
   var result = { "code": 999 };  //initialize to nonexistant http code.
