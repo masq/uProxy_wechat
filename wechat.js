@@ -57,6 +57,7 @@ var weChatClient = function(wrapHttps, debug) {
   this.events.onModContact = function(modContact) { return; };
   this.events.onInitialized = function() { return; };
   this.events.onWXIDs = function(wxids) { return; };
+  this.events.onSpecialMessage = function(something) { return; };
   
   this.loginData = {
     "skey": "",
