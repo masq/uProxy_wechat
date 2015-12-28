@@ -1,6 +1,6 @@
 {
   "name": "wechat-webclient",
-  "version": "0.0.10",
+  "version": "0.1.1",
   "description": "wechat webclient as a node.js module",
   "main": "wechat.js",
   "scripts": {
