@@ -452,7 +452,11 @@ weChatClient.prototype.webwxsync = function (type) {
               this.messages[sender].push(currMsg);
               if (!currMsg.StatusNotifyCode) {
                 // For only handling x type messages here ( && currMsg.MsgType === x)
-                if (currMsg.MsgType !== this.HIDDENMSGTYPE) {
+                //if (currMsg.MsgType !== this.HIDDENMSGTYPE) { // notify on non-hidden msgs
+                //  this.webwxStatusNotify(1, sender.UserName);
+                //}
+                if (currMsg.FromUserName.startsWith("@") && !currMsg.FromUserName.startswith("@@")) {
+                  // notify on normal contacts (not chatroom or wechat special)
                   this.webwxStatusNotify(1, sender.UserName);
                 }
                 var ts = this.formTimeStamp(currMsg.CreateTime * 1000);
