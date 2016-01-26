@@ -1110,7 +1110,7 @@ weChatClient.prototype.makeURL = function(domain, path, params, postDataLen) {
  *    display and the Error to throw.
  */
 weChatClient.prototype.handleError = function(air) {
-  if (!air instanceof Error)
+  if (!(air instanceof Error))
     air = Error(air);
   this.log(-2, air);
   this.log(-1, air.stack);
