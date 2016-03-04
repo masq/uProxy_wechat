@@ -789,7 +789,7 @@ weChatClient.prototype.webwxgetcontact = function (GetIcon) {
             this.log(-1, jason.BaseResponse.ErrMsg);
           }
           for (var i = 0; i < jason.MemberList.length; i++) {
-            if (jason.MemberList[i].UserName.startsWith("@")) {
+            if (jason.MemberList[i].UserName.startsWith("@") && jason.MemberList[i].VerifyFlag === 0) {
               this.contacts[jason.MemberList[i].UserName] = jason.MemberList[i];
               //TODO: consider a Uin to UserName dictionary as well.
             }
