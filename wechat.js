@@ -46,6 +46,7 @@ var weChatClient = function(wrapHttps, debug) {
     }
   };
 
+  // Overwrite these with your own functionality
   this.events = {};
   this.events.onWrongDom = function() { return; };
   this.events.onMessage = function(message) { return; };
@@ -58,6 +59,7 @@ var weChatClient = function(wrapHttps, debug) {
   this.events.onInitialized = function() { return; };
   this.events.onWXIDs = function(wxids) { return; };
   this.events.onSpecialMessage = function(something) { return; };
+  this.events.synccheckError = function(retcode) { return; };
   
   this.loginData = {
     "skey": "",
@@ -182,7 +184,6 @@ weChatClient.prototype.webwxcreatechatroom = function(memberlist)  {
       });
       response.on("end", function() {
         try {
-          this.log(0, "webwxcreatechatroom results: " + result);
           var jason = JSON.parse(result);
           if (jason.BaseResponse.ErrMsg !== "Everything is OK") {
             this.log(-1, "webwxcreatechatroom error: " + jason.BaseResponse.ErrMsg);
@@ -289,15 +290,15 @@ weChatClient.prototype.webwxupdatechatroom = function(updatetype, topicOrDeletio
       });
       response.on("end", function() {
         try {
-          this.log(0, "webwxupdatechatroom results: " + result);
           var jason = JSON.parse(result);
           if (jason.BaseResponse.Ret !== 0) {
             this.log(-1, "webwxupdatechatroom error: " + jason.BaseResponse.Ret);
+            reject(chatroom);
           }
           resolve(chatroom);
         } catch(e) {
           this.handleError(e).bind(this);
-          reject();
+          reject(chatroom);
         }
       }.bind(this));
     }.bind(this)).on("error", this.handleError.bind(this));
@@ -363,7 +364,7 @@ weChatClient.prototype.synccheck = function() {
               resolve(this.webwxsync(type));
             }
           } catch(e) {
-            handleError(e);
+            this.handleError(e).bind(this);
           }
         }.bind(this));
       }.bind(this)).on("error", this.handleError.bind(this));
@@ -386,6 +387,7 @@ weChatClient.prototype.synccheck = function() {
       "1205": "Attempted to check for updates too frequently; slow your roll"
     };
     var airMessage = "retcode " + retcode + ": " + codes[retcode];
+    this.events.synccheckError(retcode);
     if (retcode === 1100)
       this.log(-1, airMessage);
     else
@@ -1112,9 +1114,8 @@ weChatClient.prototype.makeURL = function(domain, path, params, postDataLen) {
 weChatClient.prototype.handleError = function(air) {
   if (!(air instanceof Error))
     air = Error(air);
-  this.log(-2, air);
-  this.log(-1, air.stack);
-  throw air;
+  this.log(-1, air);
+  this.log(-2, air.stack);
 };
 
 /*
@@ -1150,8 +1151,10 @@ weChatClient.prototype.log = function(sign, message, output) {
     result = nColorize[-sign - 1]("[-] " + message + ".");
   }
   var complete = result + (output && output !== -1 ? " " + output : "");
-  if (sign < 0)
+  if (sign < -1)
     console.error(complete);
+  else if (sign < 0)
+    console.warn(complete);
   else 
     console.log(complete);
 };
