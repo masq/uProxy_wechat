@@ -60,6 +60,7 @@ var weChatClient = function(wrapHttps, debug) {
   this.events.onWXIDs = function(wxids) { return; };
   this.events.onSpecialMessage = function(something) { return; };
   this.events.synccheckError = function(retcode) { return; };
+  this.events.synccheckZero = function() { return; };
   
   this.loginData = {
     "skey": "",
@@ -319,10 +320,14 @@ weChatClient.prototype.synccheck = function() {
   var retcode = 0;
   return this.promiseWhile(function() {
     return new Promise(function (resolve, reject) {
-      if (retcode === 0) resolve(retcode);
-      else reject(retcode);
-    });
-  }, function() {
+      if (retcode === 0) {
+        this.events.synccheckZero();
+        resolve(retcode);
+      } else {
+        reject(retcode);
+      }
+    }.bind(this));
+  }.bind(this), function() {
     return new Promise(function (resolve, reject) {
       var syncParams = {  // #encodeeverythingthatwalks
         "r": Date.now(),
@@ -457,7 +462,7 @@ weChatClient.prototype.webwxsync = function (type) {
                 //if (currMsg.MsgType !== this.HIDDENMSGTYPE) { // notify on non-hidden msgs
                 //  this.webwxStatusNotify(1, sender.UserName);
                 //}
-                if (currMsg.FromUserName.startsWith("@") && !currMsg.FromUserName.startswith("@@")) {
+                if (currMsg.FromUserName.startsWith("@") && !currMsg.FromUserName.startsWith("@@")) {
                   // notify on normal contacts (not chatroom or wechat special)
                   this.webwxStatusNotify(1, sender.UserName);
                 }
